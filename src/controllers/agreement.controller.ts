@@ -85,3 +85,134 @@ export const generateAgreementController = async (req: Request, res: Response): 
   }
 };
 
+// --- Signing Validation ---
+
+export const signAgreementValidation = [
+  param('agreementId').isString().withMessage('Agreement ID is required.'),
+  body('method')
+    .isIn(['typed', 'complete_esign', 'initiate_esign'])
+    .withMessage('Invalid signing method.'),
+  body('signatureName')
+    .if(body('method').equals('typed'))
+    .isString()
+    .isLength({ min: 1 })
+    .withMessage('Signature name is required for typed signing.'),
+];
+
+/** Handles the agreement signing process. POST /agreements/:agreementId/sign */
+export const signAgreementController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterEmail = req.user?.email;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { agreementId } = req.params as { agreementId: string };
+    const { method, signatureName } = req.body;
+
+    if (method === 'initiate_esign') {
+      // Future Task: Call DocuSign/AdobeSign API, return provider URL/token
+      return ResponseBuilder.success(
+        res,
+        {
+          status: 'initiated',
+          message: 'E-sign initiation successful. Check email for link.',
+        },
+        200
+      );
+    }
+
+    // Use email if available, otherwise use ID
+    const signerIdentifier = requesterEmail || requesterId;
+
+    // Assume 'typed' or 'complete_esign' method for current implementation
+    const updatedAgreement = await agreementService.completeSigning(
+      agreementId,
+      signerIdentifier,
+      method as 'typed' | 'complete_esign',
+      signatureName
+    );
+
+    // Success Response (200 OK)
+    if (updatedAgreement.status === 'signed') {
+      return ResponseBuilder.success(
+        res,
+        {
+          agreementId: updatedAgreement.agreementId,
+          status: 'signed',
+          message: 'Agreement fully signed. Final PDF generation initiated.',
+        },
+        200
+      );
+    }
+
+    return ResponseBuilder.success(
+      res,
+      {
+        agreementId: updatedAgreement.agreementId,
+        status: 'partially_signed',
+        message: 'Signature recorded. Awaiting other signers.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'AgreementNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Agreement not found.', 404);
+    }
+    if (errorMessage === 'SignerNotFound') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'You are not listed as a valid signer for this document.',
+        403
+      );
+    }
+    if (errorMessage === 'AlreadySigned') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'This document has already been signed by you.',
+        409
+      );
+    }
+    if (errorMessage === 'AgreementNotInSignableState') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Agreement cannot be signed in its current state.',
+        409
+      );
+    }
+    if (errorMessage === 'SignatureInvalid') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.INTERNAL_SERVER_ERROR,
+        'Failed to update signature. Please try again.',
+        500
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during signing process.',
+      500
+    );
+  }
+};
+

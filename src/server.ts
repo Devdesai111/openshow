@@ -30,6 +30,7 @@ app.use('/notifications', notificationRoutes);
 app.use('/projects', projectRoutes);
 app.use('/projects', collaborationRoutes); // Collaboration routes (Task 17)
 app.use('/projects', agreementRoutes); // Agreement routes (Task 21)
+app.use('/agreements', agreementRoutes); // Agreement signing routes (Task 26) - shares same router
 app.use('/assets', assetRoutes); // Asset upload routes (Task 19)
 app.use('/verification', verificationRoutes); // Verification routes (Task 24)
 app.use('/', utilityRoutes); // Health and metrics at root level

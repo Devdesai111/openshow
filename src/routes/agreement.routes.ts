@@ -1,5 +1,10 @@
 import { Router } from 'express';
-import { generateAgreementController, generateAgreementValidation } from '../controllers/agreement.controller';
+import {
+  generateAgreementController,
+  generateAgreementValidation,
+  signAgreementController,
+  signAgreementValidation,
+} from '../controllers/agreement.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../config/permissions';
@@ -18,7 +23,16 @@ router.post(
   generateAgreementController
 );
 
-// NOTE: Future endpoints (signing, download, status updates) will be added here.
+// --- E-Signature Endpoints (Task 26) ---
+
+// POST /projects/:agreementId/sign - Process a signature (Typed/Callback)
+router.post(
+  '/:agreementId/sign',
+  authenticate,
+  // NOTE: RBAC check is done in the service logic (only signer allowed)
+  signAgreementValidation,
+  signAgreementController
+);
 
 export default router;
 

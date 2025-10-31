@@ -2,6 +2,22 @@ import { AgreementModel, IAgreement, ISigner, IPayloadJson } from '../models/agr
 import { ProjectModel, IProject } from '../models/project.model';
 import { Types } from 'mongoose';
 
+// Mock Job/Event Emitter
+class MockJobQueue {
+  public enqueuePdfJob(agreementId: string): void {
+    console.warn(`[Job Enqueued] Final PDF generation for Agreement ${agreementId}.`);
+  }
+}
+const jobQueue = new MockJobQueue();
+
+// Mock Event Emitter
+class MockEventEmitter {
+  public emit(event: string, payload: any): void {
+    console.warn(`[EVENT EMITTED] ${event}:`, JSON.stringify(payload));
+  }
+}
+const eventEmitter = new MockEventEmitter();
+
 // DTO for initial draft request
 interface IGenerateDraftRequest {
   templateId?: string;
@@ -86,6 +102,125 @@ export class AgreementService {
     console.warn(`[Event] Agreement ${savedAgreement.agreementId} created as draft.`);
 
     return { ...(savedAgreement.toObject() as IAgreement), previewHtml };
+  }
+
+  /**
+   * Finds the signer entry for the authenticated user based on ID or email.
+   * @param agreement - Agreement document
+   * @param requesterId - User ID or email to match
+   * @returns Signer entry
+   * @throws {Error} - 'SignerNotFound'
+   */
+  private findSignerEntry(agreement: IAgreement, requesterId: string): ISigner {
+    const signerEntry = agreement.signers.find(
+      signer =>
+        (signer.signerId && signer.signerId.toString() === requesterId) ||
+        signer.email === requesterId // Use email if signerId is null or match by email
+    );
+
+    if (!signerEntry) {
+      throw new Error('SignerNotFound');
+    }
+    return signerEntry;
+  }
+
+  /**
+   * Handles the completion of an agreement signature. Supports 'typed' and 'complete_esign' (webhook).
+   * @param agreementId - The ID of the agreement
+   * @param requesterId - The ID or Email of the signer
+   * @param method - 'typed' or 'complete_esign'
+   * @param signatureName - The user's typed name (for 'typed' method)
+   * @returns Updated agreement
+   * @throws {Error} - 'AgreementNotFound', 'AlreadySigned', 'SignatureInvalid', 'AgreementNotInSignableState'
+   */
+  public async completeSigning(
+    agreementId: string,
+    requesterId: string,
+    method: 'typed' | 'complete_esign',
+    _signatureName?: string // Reserved for future use (audit trail)
+  ): Promise<IAgreement> {
+    // 1. Fetch Agreement by agreementId (short string ID) and Find Signer
+    const agreement = await AgreementModel.findOne({ agreementId });
+    if (!agreement) {
+      throw new Error('AgreementNotFound');
+    }
+
+    const agreementObj = agreement.toObject() as IAgreement;
+    const signerEntry = this.findSignerEntry(agreementObj, requesterId);
+
+    // 2. Validate Signer Status
+    if (signerEntry.signed) {
+      throw new Error('AlreadySigned');
+    }
+
+    // 3. Validate Agreement Status
+    if (agreement.status !== 'draft' && agreement.status !== 'pending_signatures' && agreement.status !== 'partially_signed') {
+      throw new Error('AgreementNotInSignableState');
+    }
+
+    // 4. Perform Atomic Update on Signer Sub-document
+    const signedAt = new Date();
+    const updateFields: Record<string, any> = {
+      'signers.$.signed': true,
+      'signers.$.signedAt': signedAt,
+      'signers.$.signatureMethod': method === 'typed' ? 'typed' : 'esign',
+    };
+
+    // Use positional operator ($) to update the specific sub-document
+    const updatedAgreement = await AgreementModel.findOneAndUpdate(
+      { agreementId, 'signers.email': signerEntry.email },
+      { $set: updateFields },
+      { new: true }
+    );
+
+    if (!updatedAgreement) {
+      throw new Error('SignatureInvalid'); // Failsafe if update fails
+    }
+
+    const updatedAgreementObj = updatedAgreement.toObject() as IAgreement;
+
+    // 5. Check Finalization Status
+    const isFullySigned = updatedAgreementObj.signers.every(s => s.signed);
+
+    if (isFullySigned) {
+      // 6. Finalize Agreement (Atomic Update)
+      await AgreementModel.updateOne(
+        { _id: updatedAgreement._id },
+        {
+          $set: {
+            status: 'signed',
+            immutableHash: `SHA256_MOCK_${agreementId}`, // Generate final hash (Task 28)
+          },
+        }
+      );
+
+      // 7. Trigger PDF Generation Job (Task 55)
+      jobQueue.enqueuePdfJob(updatedAgreementObj.agreementId);
+
+      // PRODUCTION: Emit 'agreement.fully_signed' event (Payment/Project services subscribe)
+      eventEmitter.emit('agreement.fully_signed', {
+        agreementId: updatedAgreementObj.agreementId,
+        projectId: updatedAgreementObj.projectId.toString(),
+      });
+
+      updatedAgreementObj.status = 'signed'; // Update in-memory copy for response
+    } else {
+      // 8. Update status to partially signed if necessary
+      await AgreementModel.updateOne(
+        { _id: updatedAgreement._id },
+        { $set: { status: 'partially_signed' } }
+      );
+      updatedAgreementObj.status = 'partially_signed';
+    }
+
+    // PRODUCTION: Emit 'agreement.signed' event (Notifications subscribe)
+    eventEmitter.emit('agreement.signed', {
+      agreementId,
+      signerEmail: signerEntry.email,
+      status: updatedAgreementObj.status,
+    });
+
+    return updatedAgreementObj;
   }
 }
 
