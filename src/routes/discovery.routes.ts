@@ -6,6 +6,8 @@ import {
   searchProjectsValidation,
   indexUpdateController,
   indexUpdateValidation,
+  suggestController,
+  suggestValidation,
 } from '../controllers/discovery.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -20,6 +22,9 @@ router.get('/creators', searchCreatorsValidation, searchCreatorsController);
 
 // GET /market/projects - Public Project Listing/Search (Task 16)
 router.get('/projects', searchProjectsValidation, searchProjectsController);
+
+// GET /market/suggestions - Autocomplete / typeahead (Task 43)
+router.get('/suggestions', suggestValidation, suggestController);
 
 // --- Internal Indexing Endpoints (Task 41) ---
 

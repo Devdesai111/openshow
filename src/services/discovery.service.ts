@@ -282,6 +282,62 @@ export class DiscoveryService {
     // Normalize to a 0-100 range for client display
     return Math.min(100, Math.round(finalScore * 100));
   }
+
+  /**
+   * Retrieves real-time search suggestions.
+   * @param data - Suggestion request with query, optional type filter, and limit
+   * @returns List of ranked suggestions
+   */
+  public async getSuggestions(data: {
+    q: string;
+    type?: 'creator' | 'project' | 'skill' | 'tag';
+    limit: number;
+  }): Promise<{ query: string; suggestions: Array<{ text: string; type: string; score: number; id?: string }> }> {
+    const { q, type, limit } = data;
+    const queryLower = q.toLowerCase();
+
+    // 1. Filter and Score based on the query (Simulated Edge N-Gram Match)
+    let results = MockSuggestionCache.filter(item => {
+      const textMatch = item.text.toLowerCase().startsWith(queryLower);
+      const typeMatch = !type || item.type === type;
+      return textMatch && typeMatch;
+    })
+      // 2. Apply simulated ranking/sort
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    // 3. Map to final DTO
+    const suggestions = results.map(item => ({
+      text: item.text,
+      type: item.type,
+      score: item.score,
+      id: item.id?.startsWith('skill') ? undefined : item.id, // Only return ID for entities (Creator/Project)
+    }));
+
+    return {
+      query: q,
+      suggestions,
+    };
+  }
 }
+
+// --- Mock Index/Cache for Suggestions (Simulating a highly optimized index/Redis cache) ---
+interface ISuggestionCacheItem {
+  text: string;
+  type: 'creator' | 'project' | 'skill' | 'tag';
+  score: number;
+  id?: string;
+}
+
+const MockSuggestionCache: ISuggestionCacheItem[] = [
+  { text: 'Prompt Engineer', type: 'skill', score: 0.98, id: 'skill_prompt' },
+  { text: 'AI Video Editor', type: 'skill', score: 0.95, id: 'skill_video' },
+  { text: 'Dev Bhai (Creator)', type: 'creator', score: 0.9, id: 'creator_1' },
+  { text: 'Echoes - AI Short Film', type: 'project', score: 0.85, id: 'proj_echo' },
+  { text: 'AI Music Composer', type: 'skill', score: 0.7, id: 'skill_music' },
+  { text: 'PrompTech Innovations', type: 'project', score: 0.92, id: 'proj_promptech' },
+  { text: 'Video Production Specialist', type: 'skill', score: 0.88, id: 'skill_video_prod' },
+  { text: 'Creative Director', type: 'creator', score: 0.75, id: 'creator_2' },
+];
 
 

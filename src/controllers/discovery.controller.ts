@@ -52,6 +52,12 @@ export const searchProjectsValidation = [
   query('per_page').optional().isInt({ min: 1, max: 100 }).toInt().withMessage('Per_page must be between 1 and 100.'),
 ];
 
+export const suggestValidation = [
+  query('q').isString().isLength({ min: 1 }).withMessage('Query term "q" is required (min 1 character).'),
+  query('type').optional().isIn(['creator', 'project', 'skill', 'tag']).withMessage('Invalid suggestion type filter.'),
+  query('limit').optional().isInt({ min: 1, max: 10 }).toInt().withMessage('Limit must be between 1 and 10.'),
+];
+
 /** Handles the search and listing of public projects. GET /market/projects */
 export const searchProjectsController = async (req: Request, res: Response): Promise<void> => {
   const errors = validationResult(req);
@@ -74,6 +80,44 @@ export const searchProjectsController = async (req: Request, res: Response): Pro
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'An unexpected error occurred during project search.',
+      500
+    );
+  }
+};
+
+/** Handles real-time search suggestions. GET /market/suggestions */
+export const suggestController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { q, type, limit = 5 } = req.query;
+
+    // Service Call (Note: No authentication required - public endpoint)
+    const results = await discoveryService.getSuggestions({
+      q: q as string,
+      type: type as 'creator' | 'project' | 'skill' | 'tag' | undefined,
+      limit: typeof limit === 'number' ? limit : parseInt(limit as string, 10) || 5,
+    });
+
+    // Success (200 OK) - High performance endpoint, return directly
+    return ResponseBuilder.success(res, results, 200);
+  } catch (error: unknown) {
+    // High-latency risk: Log external/internal service failure
+    console.error('Suggest Service Failure:', error);
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Suggestion service is temporarily unavailable.',
       500
     );
   }
