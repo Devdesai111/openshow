@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { AuthService } from '../services/auth.service';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
+import { UserDTOMapper } from '../types/user-dtos';
 
 const authService = new AuthService();
 
@@ -282,6 +283,103 @@ export const requestPasswordResetController = async (
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'An unexpected server error occurred.',
+      500
+    );
+  }
+};
+
+/**
+ * Handles refresh token renewal and rotation. POST /auth/refresh
+ */
+export const refreshController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Input Validation (minimal: token presence)
+  const refreshToken = req.body.refreshToken as string;
+
+  if (!refreshToken || typeof refreshToken !== 'string') {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INVALID_INPUT,
+      'Refresh token is required.',
+      400
+    );
+  }
+
+  try {
+    // 2. Service Call: Invalidates old token and issues new pair
+    const { accessToken, refreshToken: newRefreshToken, expiresIn } =
+      await authService.refreshTokens(refreshToken, req);
+
+    // 3. Success (200 OK)
+    const responseData = {
+      accessToken,
+      refreshToken: newRefreshToken,
+      tokenType: 'Bearer',
+      expiresIn,
+    };
+
+    return ResponseBuilder.success(res, responseData, 200);
+  } catch (error: unknown) {
+    // 4. Error Handling
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'SessionExpired' || errorMessage === 'UserNotFound') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.SESSION_EXPIRED,
+        'Refresh token is expired or invalid. Please log in again.',
+        401
+      );
+    }
+    // Fallback
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during token refresh.',
+      500
+    );
+  }
+};
+
+/**
+ * Handles user profile retrieval from Access Token. GET /auth/me
+ */
+export const meController = async (req: Request, res: Response): Promise<void> => {
+  // Assumes Task 2's `authenticate` middleware successfully ran
+  const userId = req.user?.sub;
+
+  if (!userId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    // 1. Service Call
+    const user = await authService.getAuthMe(userId);
+
+    // 2. Response Mapping using UserDTOMapper (Task-102 standard)
+    const userDTO = UserDTOMapper.toAuthDTO(user);
+
+    // 3. Success (200 OK)
+    return ResponseBuilder.success(res, userDTO, 200);
+  } catch (error: unknown) {
+    // 4. Error Handling
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'UserNotFound') {
+      return ResponseBuilder.notFound(res, 'User');
+    }
+    if (errorMessage === 'AccountSuspended') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.ACCOUNT_INACTIVE,
+        'Your account is suspended. Access denied.',
+        403
+      );
+    }
+    // Fallback
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error fetching user profile.',
       500
     );
   }

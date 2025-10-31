@@ -302,5 +302,71 @@ export class AuthService {
     // 5. Return success regardless of whether the user exists (SECURITY)
     return;
   }
+
+  /**
+   * Renews tokens using a Refresh Token. Implements token rotation.
+   * @throws {Error} - 'SessionExpired' | 'SessionRevoked' | 'UserNotFound'.
+   */
+  public async refreshTokens(refreshToken: string, req: Request): Promise<ITokenPair> {
+    // 1. Find the session by comparing the plain token to all hashed tokens in DB
+    const sessions = await AuthSessionModel.find({
+      expiresAt: { $gt: new Date() }, // Only check non-expired sessions
+    });
+
+    // Use a loop + async compare to find the match
+    let matchedSession = null;
+    for (const session of sessions) {
+      const isMatch = await compare(refreshToken, session.refreshTokenHash);
+      if (isMatch) {
+        matchedSession = session;
+        break;
+      }
+    }
+
+    if (!matchedSession) {
+      throw new Error('SessionExpired');
+    }
+
+    // 2. Fetch the user associated with the session
+    const user = (await UserModel.findById(matchedSession.userId).lean()) as IUser | null;
+    if (!user) {
+      throw new Error('UserNotFound');
+    }
+
+    // 3. Invalidate the old refresh token (Rotation: mark as expired/used)
+    // SECURITY: This prevents replay attacks if the old token was compromised
+    matchedSession.expiresAt = new Date(); // Set expiry to now
+    await matchedSession.save();
+
+    // 4. Generate new tokens and save the new session
+    const tokenPair = generateTokens(user);
+    await saveRefreshToken(user._id as Types.ObjectId, tokenPair.refreshToken, req, true);
+
+    return tokenPair;
+  }
+
+  /**
+   * Retrieves the current user's profile information.
+   * @throws {Error} - 'UserNotFound' | 'AccountSuspended'.
+   */
+  public async getAuthMe(userId: string): Promise<IUser> {
+    // 1. Find user (select all fields explicitly for DTO mapping)
+    const user = (await UserModel.findById(new Types.ObjectId(userId)).lean()) as IUser | null;
+
+    if (!user) {
+      throw new Error('UserNotFound');
+    }
+
+    // 2. Status check
+    if (user.status !== 'active' && user.status !== 'pending') {
+      throw new Error('AccountSuspended');
+    }
+
+    // 3. Update lastSeenAt (optional, minimal write)
+    await UserModel.updateOne({ _id: user._id }, { $set: { lastSeenAt: new Date() } });
+
+    // 4. Return user
+    return user;
+  }
 }
 

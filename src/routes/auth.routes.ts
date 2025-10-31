@@ -8,7 +8,10 @@ import {
   oauthValidation,
   requestPasswordResetController,
   passwordResetRequestValidation,
+  refreshController,
+  meController,
 } from '../controllers/auth.controller';
+import { authenticate } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -24,9 +27,21 @@ router.post('/login', loginValidation, loginController);
 router.post('/oauth', oauthValidation, oauthController);
 
 // POST /auth/password-reset/request - Trigger password reset email (Task 3)
-router.post('/password-reset/request', passwordResetRequestValidation, requestPasswordResetController);
+router.post(
+  '/password-reset/request',
+  passwordResetRequestValidation,
+  requestPasswordResetController
+);
 
-// NOTE: Token refresh, Logout, and other endpoints will be implemented in subsequent tasks.
+// POST /auth/refresh - Exchange refresh token for new access token (Task 4)
+router.post('/refresh', refreshController);
+
+// --- Protected Endpoints ---
+
+// GET /auth/me - Get current user profile & roles (Task 4)
+router.get('/me', authenticate, meController); // Requires only authentication
+
+// NOTE: Logout and other endpoints will be implemented in subsequent tasks.
 
 export default router;
 

@@ -24,6 +24,8 @@ export enum ErrorCode {
   TOKEN_EXPIRED = 'token_expired',
   TOKEN_INVALID = 'token_invalid',
   ACCOUNT_INACTIVE = 'account_inactive',
+  SESSION_EXPIRED = 'session_expired',
+  SESSION_REVOKED = 'session_revoked',
 
   // Validation errors
   VALIDATION_ERROR = 'validation_error',
