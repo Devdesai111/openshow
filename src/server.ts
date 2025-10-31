@@ -13,6 +13,7 @@ import assetRoutes from './routes/asset.routes';
 import agreementRoutes from './routes/agreement.routes';
 import verificationRoutes from './routes/verification.routes';
 import revenueRoutes from './routes/revenue.routes';
+import paymentRoutes from './routes/payment.routes';
 import utilityRoutes from './routes/utility.routes';
 
 const app: Application = express();
@@ -35,6 +36,7 @@ app.use('/agreements', agreementRoutes); // Agreement signing routes (Task 26) -
 app.use('/assets', assetRoutes); // Asset upload routes (Task 19)
 app.use('/verification', verificationRoutes); // Verification routes (Task 24)
 app.use('/revenue', revenueRoutes); // Revenue calculation routes (Task 31)
+app.use('/payments', paymentRoutes); // Payment intents and checkout routes (Task 34)
 app.use('/', utilityRoutes); // Health and metrics at root level
 
 // Start server
