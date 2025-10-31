@@ -7,6 +7,7 @@ import authRoutes from './routes/auth.routes';
 import userProfileRoutes from './routes/userProfile.routes';
 import discoveryRoutes from './routes/discovery.routes';
 import notificationRoutes from './routes/notification.routes';
+import projectRoutes from './routes/project.routes';
 import utilityRoutes from './routes/utility.routes';
 
 const app: Application = express();
@@ -22,6 +23,7 @@ app.use('/auth', authRoutes);
 app.use('/users', userProfileRoutes);
 app.use('/', discoveryRoutes);
 app.use('/notifications', notificationRoutes);
+app.use('/projects', projectRoutes);
 app.use('/', utilityRoutes); // Health and metrics at root level
 
 // Start server
