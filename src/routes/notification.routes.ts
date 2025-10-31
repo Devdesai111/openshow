@@ -13,6 +13,7 @@ import {
   getUnreadCountController,
   listNotificationsValidation,
   markReadValidation,
+  emailWebhookController,
 } from '../controllers/notification.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -67,5 +68,11 @@ router.post('/mark-read', authenticate, markReadValidation, markReadController);
 
 // GET /notifications/unread-count - Get unread count
 router.get('/unread-count', authenticate, getUnreadCountController);
+
+// --- Webhooks (Public) ---
+
+// POST /webhooks/notifications/email - Email Provider webhook receiver (Task 48)
+// NOTE: This route needs special raw body parsing middleware in the main Express config.
+router.post('/webhooks/notifications/email', emailWebhookController);
 
 export default router;

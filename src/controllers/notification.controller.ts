@@ -352,3 +352,47 @@ export const getUnreadCountController = async (req: Request, res: Response): Pro
     );
   }
 };
+
+// --- Email Webhook Controller ---
+
+/** Receives webhooks from the Email Provider. POST /webhooks/notifications/email */
+export const emailWebhookController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Retrieve Signature and Payload (Raw body is often required by PSP)
+  const signature =
+    (req.headers['x-email-signature'] as string) ||
+    (req.headers['x-sendgrid-signature'] as string) ||
+    'no-signature';
+
+  // NOTE: In a real Express setup, you must use a middleware like body-parser.raw to get the raw body string.
+  // For now, the service will JSON.stringify the payload internally for signature verification
+
+  try {
+    // 2. Service Call (handles signature, parsing, and update logic)
+    await notificationService.handleEmailWebhook(req.body, signature);
+
+    // 3. Success (200 OK) - Required by provider
+    res.status(200).send('OK');
+    return;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    // 4. Error Handling
+    if (errorMessage === 'InvalidWebhookSignature') {
+      // Must return 401 on failed security check
+      res.status(401).json({
+        error: {
+          code: 'signature_invalid',
+          message: 'Webhook signature validation failed.',
+        },
+      });
+      return;
+    }
+    // Return 400 on parsing/processing error, but avoid 500 for non-fatal errors
+    res.status(400).json({
+      error: {
+        code: 'webhook_fail',
+        message: 'Error processing email event.',
+      },
+    });
+    return;
+  }
+};

@@ -4,6 +4,10 @@ import { Types } from 'mongoose';
 import { INotification, NotificationModel } from '../models/notification.model';
 import { INotificationTemplate, NotificationTemplateModel } from '../models/notificationTemplate.model';
 import { UserInboxModel } from '../models/userNotification.model';
+import { IEmailAdapter, IEmailSendDTO } from '../notificationAdapters/email.interface';
+import { SendGridAdapter } from '../notificationAdapters/sendgrid.adapter';
+
+const emailAdapter: IEmailAdapter = new SendGridAdapter(); // Assume SendGrid is the active provider
 
 // DTO for incoming template-based send request
 interface ITemplateSendRequest {
@@ -381,5 +385,65 @@ export class NotificationService {
     });
 
     return count;
+  }
+
+  // --- Email Provider Adapter Methods ---
+
+  /**
+   * Simulates dispatching a notification email. Called by the Worker/Job (Task 47).
+   * @param recipientEmail - Recipient email address
+   * @param content - Rendered notification content
+   * @param notificationId - Internal notification ID for webhook correlation
+   * @returns Email send response with provider message ID
+   */
+  public async sendEmailNotification(
+    recipientEmail: string,
+    content: { email?: { subject?: string; html?: string; text?: string } },
+    notificationId: string
+  ): Promise<{ providerMessageId: string; status: 'sent' | 'pending' }> {
+    // 1. Build Provider DTO
+    const sendDto: IEmailSendDTO = {
+      to: recipientEmail,
+      subject: content.email?.subject || 'Notification',
+      html: content.email?.html || '',
+      text: content.email?.text,
+      providerRefId: notificationId, // Use internal ID for webhook correlation
+    };
+
+    // 2. Call Adapter
+    const result = await emailAdapter.sendEmail(sendDto);
+
+    // PRODUCTION: Create DispatchAttempt record for audit (Task 47)
+
+    return result;
+  }
+
+  /**
+   * Handles incoming webhook events from the Email Provider (e.g., bounce, delivered).
+   * @param payload - Webhook event payload
+   * @param signature - Webhook signature for verification
+   * @throws {Error} - 'InvalidWebhookSignature' if signature verification fails
+   */
+  public async handleEmailWebhook(payload: any, signature: string): Promise<void> {
+    // 1. SECURITY: Verify Signature
+    const rawPayload = JSON.stringify(payload);
+    if (!emailAdapter.verifyWebhookSignature(rawPayload, signature)) {
+      throw new Error('InvalidWebhookSignature');
+    }
+
+    // 2. Process Events (Mock Logic)
+    if (Array.isArray(payload)) {
+      for (const event of payload) {
+        const { event: type, email, providerMessageId: _providerMessageId } = event; // Example fields
+
+        // PRODUCTION: Find DispatchAttempt record by providerMessageId/email
+        // Update status to 'success' or 'permanent_failed' (bounce)
+
+        if (type === 'bounce') {
+          // CRITICAL: Trigger bounce suppression logic here (Task 60)
+          console.warn(`[Bounce/Webhook] Permanent Failure for ${email}. Triggering suppression.`);
+        }
+      }
+    }
   }
 }
