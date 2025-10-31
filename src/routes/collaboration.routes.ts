@@ -8,8 +8,14 @@ import {
   messageIdParamValidation,
   projectIdParamValidation,
   getMessagesValidation,
+  logActivityController,
+  getActivityFeedController,
+  logActivityValidation,
+  getActivityValidation,
 } from '../controllers/collaboration.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { authorize } from '../middleware/rbac.middleware';
+import { PERMISSIONS } from '../config/permissions';
 
 const router = Router();
 
@@ -47,6 +53,23 @@ router.delete(
   deleteMessageController
 );
 
-// NOTE: Future Activity/Reaction/Other endpoints will be added here.
+// --- Activity Feed Endpoints (Task 18) ---
+
+// POST /projects/:projectId/activity - Log new activity event (Internal/Admin only)
+router.post(
+  '/:projectId/activity',
+  authenticate,
+  authorize([PERMISSIONS.ADMIN_DASHBOARD]),
+  logActivityValidation,
+  logActivityController
+);
+
+// GET /projects/:projectId/activity - Retrieve activity feed (Member only)
+router.get(
+  '/:projectId/activity',
+  authenticate,
+  getActivityValidation,
+  getActivityFeedController
+);
 
 export default router;

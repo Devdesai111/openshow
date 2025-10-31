@@ -32,6 +32,20 @@ export const getMessagesValidation = [
   query('before').optional().isString().withMessage('Before must be a valid message ID cursor.'),
 ];
 
+// --- Validation Middleware (Activity) ---
+export const logActivityValidation = [
+  body('type').isString().isLength({ min: 5 }).withMessage('Activity type is required.'),
+  body('summary').isString().isLength({ min: 5, max: 500 }).withMessage('Activity summary is required (5-500 chars).'),
+  body('actorId').optional().isMongoId().withMessage('Actor ID must be a valid Mongo ID if provided.'),
+  body('payload').optional().isObject().withMessage('Payload must be a JSON object.'),
+];
+
+export const getActivityValidation = [
+  param('projectId').isMongoId().withMessage('Invalid Project ID format.').bail(),
+  query('limit').optional().isInt({ min: 1, max: 100 }).toInt().withMessage('Limit must be between 1 and 100.'),
+  query('after').optional().isString().withMessage('After must be a valid activity ID cursor.'),
+];
+
 // --- Message Controllers ---
 
 /** Sends a new message. POST /projects/:id/messages */
@@ -258,5 +272,82 @@ export const deleteMessageController = async (req: Request, res: Response): Prom
       'Internal server error deleting message.',
       500
     );
+  }
+};
+
+// --- Activity Controllers ---
+
+/** Logs an immutable activity event. POST /projects/:projectId/activity */
+export const logActivityController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { projectId } = req.params as { projectId: string };
+    const actorId = (req.user?.sub as string) || (req.body.actorId as string | undefined) || null;
+
+    const savedActivity = await collaborationService.logActivity(projectId, actorId, req.body);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        activityId: savedActivity.activityId,
+        type: savedActivity.type,
+        createdAt: savedActivity.createdAt?.toISOString(),
+      },
+      201
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error logging activity.', 500);
+  }
+};
+
+/** Retrieves the activity feed. GET /projects/:projectId/activity */
+export const getActivityFeedController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId } = req.params as { projectId: string };
+    const limit = req.query.limit ? Number(req.query.limit) : 50;
+    const after = req.query.after as string | undefined;
+
+    const result = await collaborationService.getActivityFeed(projectId, requesterId, requesterRole, limit, after);
+
+    return ResponseBuilder.success(res, result, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(res, ErrorCode.PERMISSION_DENIED, 'You must be a project member to view the activity feed.', 403);
+    }
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error retrieving activity feed.', 500);
   }
 };
