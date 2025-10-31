@@ -319,6 +319,45 @@ export class DiscoveryService {
       suggestions,
     };
   }
+
+  /**
+   * Simulates calling an external ML Re-ranker service.
+   * This utility is intended for internal use only by the primary search method.
+   * @param data - The query and preliminary search results with feature signals
+   * @returns A list of re-ranked document scores
+   */
+  public async callReRanker(data: {
+    query: string;
+    results: Array<{ docId: string; score: number; features: Record<string, any> }>;
+  }): Promise<{ query: string; rerankedResults: Array<{ docId: string; finalScore: number }> }> {
+    const { query, results } = data;
+
+    // PRODUCTION: This would be an HTTP/gRPC call to a dedicated ML service.
+    // const rerankerResponse = await fetch('ML_RERANKER_ENDPOINT', { method: 'POST', body: JSON.stringify(data) });
+
+    // MOCK LOGIC: Boost any document with high completion_rate features
+    const rerankedResults: Array<{ docId: string; finalScore: number }> = results.map(result => {
+      let finalScore = result.score;
+
+      // Example Rule: Boost documents with completion_rate > 0.9 by 0.1
+      if (result.features.completion_rate && result.features.completion_rate > 0.9) {
+        finalScore += 0.1;
+      }
+
+      return {
+        docId: result.docId,
+        finalScore: Math.min(1.0, finalScore),
+      };
+    });
+
+    // Final Sort by finalScore DESC
+    rerankedResults.sort((a, b) => b.finalScore - a.finalScore);
+
+    return {
+      query,
+      rerankedResults,
+    };
+  }
 }
 
 // --- Mock Index/Cache for Suggestions (Simulating a highly optimized index/Redis cache) ---

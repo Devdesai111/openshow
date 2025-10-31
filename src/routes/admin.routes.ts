@@ -7,6 +7,8 @@ import {
   adminBatchValidation,
   updateRankingWeightsController,
   updateRankingWeightsValidation,
+  reRankHookController,
+  reRankHookValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -44,6 +46,17 @@ router.put(
   authorize(financeAccess), // RBAC check
   updateRankingWeightsValidation,
   updateRankingWeightsController
+);
+
+// --- Admin Search/ML Endpoints (Task 45) ---
+
+// POST /admin/search/rerank-hook - Internal hook to trigger ML re-ranking
+router.post(
+  '/search/rerank-hook',
+  authenticate,
+  authorize(financeAccess), // RBAC check: System/Admin access only
+  reRankHookValidation,
+  reRankHookController
 );
 
 // ... Future Admin endpoints (moderation, reconciliation, manual ops) go here ...
