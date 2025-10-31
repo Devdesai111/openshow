@@ -167,7 +167,12 @@ export class AuthService {
 
     // 3. Generate tokens and save session
     const tokenPair = generateTokens(savedUser);
-    await saveRefreshToken(savedUser._id as Types.ObjectId, tokenPair.refreshToken, req, rememberMe);
+    await saveRefreshToken(
+      savedUser._id as Types.ObjectId,
+      tokenPair.refreshToken,
+      req,
+      rememberMe
+    );
 
     // 4. Return tokens and sanitized user object
     const userObject = savedUser.toObject({ getters: true, virtuals: true }) as IUser;
@@ -285,10 +290,7 @@ export class AuthService {
    * Generates and stores a unique token, then schedules an email.
    * @returns Always returns success to prevent user enumeration.
    */
-  public async requestPasswordReset(data: {
-    email: string;
-    redirectUrl: string;
-  }): Promise<void> {
+  public async requestPasswordReset(data: { email: string; redirectUrl: string }): Promise<void> {
     const { email, redirectUrl } = data;
 
     // 1. Find user (don't throw if not found - SECURITY)
@@ -555,7 +557,9 @@ export class AuthService {
     await user.save();
 
     // PRODUCTION: Emit 'user.suspended' event
-    console.warn(`[Event] User ${targetUserId} suspended. Reason: ${reason}. Until: ${until?.toISOString() || 'indefinite'}`);
+    console.warn(
+      `[Event] User ${targetUserId} suspended. Reason: ${reason}. Until: ${until?.toISOString() || 'indefinite'}`
+    );
     return user.toObject() as IUser;
   }
 
@@ -574,4 +578,3 @@ export class AuthService {
     return user.toObject() as IUser;
   }
 }
-

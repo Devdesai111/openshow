@@ -43,4 +43,3 @@ export const checkPermissions = (
 export const checkStatus = (userStatus: IUser['status']): boolean => {
   return userStatus === 'active';
 };
-

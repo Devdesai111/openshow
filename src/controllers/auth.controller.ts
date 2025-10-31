@@ -10,7 +10,10 @@ const authService = new AuthService();
 // Define input validation middleware (reusable)
 export const signupValidation = [
   body('email').isEmail().withMessage('Email must be valid.').bail(),
-  body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters.').bail(),
+  body('password')
+    .isLength({ min: 8 })
+    .withMessage('Password must be at least 8 characters.')
+    .bail(),
   body('role').optional().isIn(['creator', 'owner']).withMessage('Role must be creator or owner.'),
 ];
 
@@ -21,9 +24,7 @@ export const loginValidation = [
 ];
 
 export const oauthValidation = [
-  body('provider')
-    .isIn(['google', 'github', 'linkedin'])
-    .withMessage('Invalid OAuth provider.'),
+  body('provider').isIn(['google', 'github', 'linkedin']).withMessage('Invalid OAuth provider.'),
   body('providerAccessToken').isString().withMessage('Provider access token is required.'),
   body('role').optional().isIn(['creator', 'owner']),
 ];
@@ -45,7 +46,10 @@ export const verify2FAValidation = [
 
 export const suspendUserValidation = [
   param('userId').isMongoId().withMessage('Invalid User ID format.'),
-  body('reason').isString().isLength({ min: 10 }).withMessage('Reason must be at least 10 characters.'),
+  body('reason')
+    .isString()
+    .isLength({ min: 10 })
+    .withMessage('Reason must be at least 10 characters.'),
   body('until')
     .optional()
     .isISO8601()
@@ -319,18 +323,16 @@ export const refreshController = async (req: Request, res: Response): Promise<vo
   const refreshToken = req.body.refreshToken as string;
 
   if (!refreshToken || typeof refreshToken !== 'string') {
-    return ResponseBuilder.error(
-      res,
-      ErrorCode.INVALID_INPUT,
-      'Refresh token is required.',
-      400
-    );
+    return ResponseBuilder.error(res, ErrorCode.INVALID_INPUT, 'Refresh token is required.', 400);
   }
 
   try {
     // 2. Service Call: Invalidates old token and issues new pair
-    const { accessToken, refreshToken: newRefreshToken, expiresIn } =
-      await authService.refreshTokens(refreshToken, req);
+    const {
+      accessToken,
+      refreshToken: newRefreshToken,
+      expiresIn,
+    } = await authService.refreshTokens(refreshToken, req);
 
     // 3. Success (200 OK)
     const responseData = {
@@ -549,7 +551,11 @@ export const verify2FAController = async (req: Request, res: Response): Promise<
         422
       );
     }
-    if (errorMessage === 'SecretNotFound' || errorMessage === 'SecretMismatch' || errorMessage === 'SecretExpired') {
+    if (
+      errorMessage === 'SecretNotFound' ||
+      errorMessage === 'SecretMismatch' ||
+      errorMessage === 'SecretExpired'
+    ) {
       return ResponseBuilder.error(
         res,
         ErrorCode.NOT_FOUND,
@@ -709,4 +715,3 @@ export const unsuspendUserController = async (req: Request, res: Response): Prom
     );
   }
 };
-

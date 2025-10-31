@@ -132,7 +132,15 @@ export class UserDTOMapper {
    */
   static toCreatorDTO(
     user: IUser,
-    profile: { headline?: string; bio?: string; verified?: boolean; skills?: string[]; languages?: string[]; rating?: { average: number; count: number }; hourlyRate?: { amount: number; currency?: string } } | null
+    profile: {
+      headline?: string;
+      bio?: string;
+      verified?: boolean;
+      skills?: string[];
+      languages?: string[];
+      rating?: { average: number; count: number };
+      hourlyRate?: { amount: number; currency?: string };
+    } | null
   ): CreatorProfileDTO {
     return {
       ...this.toPublicDTO(user),
@@ -157,4 +165,3 @@ export class UserDTOMapper {
     };
   }
 }
-

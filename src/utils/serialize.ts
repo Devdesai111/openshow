@@ -90,4 +90,3 @@ export function serializeDates(obj: any): any {
 
   return result;
 }
-

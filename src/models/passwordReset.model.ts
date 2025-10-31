@@ -23,4 +23,3 @@ const PasswordResetSchema = new Schema<IPasswordReset>(
 PasswordResetSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const PasswordResetModel = model<IPasswordReset>('PasswordReset', PasswordResetSchema);
-

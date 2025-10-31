@@ -25,4 +25,3 @@ const AuthSessionSchema = new Schema<IAuthSession>(
 AuthSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const AuthSessionModel = model<IAuthSession>('AuthSession', AuthSessionSchema);
-

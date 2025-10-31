@@ -36,4 +36,3 @@ export function validatePasswordStrength(password: string): boolean {
     /[!@#$%^&*(),.?":{}|<>]/.test(password)
   );
 }
-

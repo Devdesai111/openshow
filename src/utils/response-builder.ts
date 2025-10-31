@@ -91,4 +91,3 @@ export class ResponseBuilder {
     this.error(res, ErrorCode.VALIDATION_ERROR, 'Input validation failed', 422, details);
   }
 }
-

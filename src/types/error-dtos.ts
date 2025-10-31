@@ -47,4 +47,3 @@ export enum ErrorCode {
   SERVICE_UNAVAILABLE = 'service_unavailable',
   RATE_LIMIT_EXCEEDED = 'rate_limit_exceeded',
 }
-

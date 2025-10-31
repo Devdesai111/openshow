@@ -19,4 +19,3 @@ export interface PaginationQuery {
   per_page?: number;
   cursor?: string;
 }
-

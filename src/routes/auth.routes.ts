@@ -87,4 +87,3 @@ router.post(
 // NOTE: Password reset confirmation and other endpoints will be implemented in subsequent tasks.
 
 export default router;
-

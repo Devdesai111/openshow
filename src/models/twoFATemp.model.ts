@@ -22,4 +22,3 @@ const TwoFATempSchema = new Schema<ITwoFATemp>(
 TwoFATempSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const TwoFATempModel = model<ITwoFATemp>('TwoFATemp', TwoFATempSchema);
-
