@@ -69,3 +69,97 @@ export const createPaymentIntentController = async (req: Request, res: Response)
   }
 };
 
+// --- Escrow Controllers ---
+
+/** Locks funds into a new Escrow record. POST /payments/escrow/lock */
+export const lockEscrowController = async (req: Request, res: Response): Promise<void> => {
+  // NOTE: In a real app, this internal endpoint would be called by a trusted backend service (Task 35.2 webhook logic).
+  // For Phase 1 testing, we expose it under Auth/Admin.
+
+  try {
+    // Service handles check that transaction already succeeded and creates escrow
+    const savedEscrow = await paymentService.lockEscrow(req.body);
+
+    // Success (201 Created)
+    return ResponseBuilder.success(
+      res,
+      {
+        escrowId: savedEscrow.escrowId,
+        status: savedEscrow.status,
+        message: 'Funds locked successfully and project milestone updated.',
+      },
+      201
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'EscrowAlreadyLocked') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Escrow for this milestone is already active.',
+        409
+      );
+    }
+    if (errorMessage === 'TransactionNotSucceeded') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'The payment transaction must be marked as succeeded before locking escrow.',
+        409
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error locking funds.',
+      500
+    );
+  }
+};
+
+// --- Webhook Controller ---
+
+/** Receives webhooks from PSPs. POST /webhooks/payments */
+export const webhookController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Retrieve essential data for validation
+  const pspSignature =
+    (req.headers['stripe-signature'] as string) ||
+    (req.headers['x-razorpay-signature'] as string) ||
+    '';
+  const provider = ((req.headers['x-psp-provider'] as string)?.toLowerCase() || 'stripe') as string; // Default to Stripe
+
+  try {
+    // 2. Service Call (handles signature, event parsing, and updates)
+    await paymentService.handleWebhook(provider, req.body, pspSignature);
+
+    // 3. Success (200 OK) - Required by PSP for acknowledgement
+    res.status(200).send('OK');
+    return;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    // CRITICAL: Must not throw 500 on business logic error (e.g., TxnNotFound), only on system failure.
+    console.warn('Webhook processing error:', errorMessage);
+
+    if (errorMessage === 'InvalidWebhookSignature') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.UNAUTHORIZED,
+        'Webhook signature validation failed.',
+        401
+      );
+    }
+
+    // Always return 200/400 for errors that aren't config/signature to prevent provider retries
+    res.status(400).json({
+      error: {
+        code: 'webhook_fail',
+        message: errorMessage,
+      },
+    });
+    return;
+  }
+};
+
