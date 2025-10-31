@@ -592,7 +592,12 @@ export class ProjectService {
     }
 
     // 2. Additional Filters
-    if (status) filters.status = status;
+    if (status) {
+      filters.status = status;
+    } else {
+      // Exclude archived projects by default from general listing (unless explicitly requested)
+      filters.status = { $ne: 'archived' };
+    }
     if (ownerId) filters.ownerId = new Types.ObjectId(ownerId);
 
     // 3. Pagination and Execution
@@ -628,6 +633,7 @@ export class ProjectService {
       teamMemberCount: project.teamMemberIds.length,
       createdAt: project.createdAt!.toISOString(),
       updatedAt: project.updatedAt!.toISOString(),
+      isMember: requesterId ? project.teamMemberIds.some(id => id.toString() === requesterId) : false, // Added for client-side display logic
     }));
 
     const totalPages = Math.ceil(totalResults / limit) || 1;
@@ -665,16 +671,20 @@ export class ProjectService {
 
     const isMember = requesterId ? project.teamMemberIds.some(id => id.toString() === requesterId) : false;
     const isPublic = project.visibility === 'public';
+    const isAdmin = requesterRole === 'admin';
 
-    // 1. Authorization Check (403/404 for private projects if not member/admin)
-    if (!isMember && !isPublic && requesterRole !== 'admin') {
-      // For security, return 404 to avoid revealing project existence
-      throw new Error('PermissionDenied');
+    // 1. REFINED AUTHORIZATION CHECK (SECURITY BY OBSCURITY)
+    // If it's private AND not a member AND not an admin, treat it as Not Found (404).
+    if (!isMember && !isPublic && !isAdmin) {
+      throw new Error('ProjectNotFound'); // Security through obscurity - don't reveal private project existence
     }
 
-    // 2. Redaction: Revenue Splits (Hiding user IDs for non-members)
+    // 2. Redaction Logic (Core Principle: If !isMember, redact sensitive data)
+    const canSeeTeamIds = isMember || isAdmin;
+    const canSeePrivateFinances = isMember || isAdmin;
+
     const redactedSplits = project.revenueSplits.map(split => {
-      if (isMember || requesterRole === 'admin') {
+      if (canSeePrivateFinances) {
         return {
           splitId: split._id?.toString(),
           userId: split.userId?.toString(),
@@ -708,22 +718,23 @@ export class ProjectService {
         description: r.description,
         slots: r.slots,
         filled: r.assignedUserIds.length,
-        assignedUserIds: isMember || requesterRole === 'admin' ? r.assignedUserIds.map(id => id.toString()) : [], // Hide member IDs if non-member
+        assignedUserIds: canSeeTeamIds ? r.assignedUserIds.map(id => id.toString()) : [], // REDACTION: Hide assigned user IDs for non-members
         requiredSkills: r.requiredSkills,
       })),
       milestones: project.milestones.map(m => ({
         milestoneId: m._id!.toString(),
         title: m.title,
         description: m.description,
-        amount: m.amount,
-        currency: m.currency,
+        // REDACTION: Non-members still see titles/status, but full financial context is for members.
+        amount: canSeePrivateFinances ? m.amount : undefined,
+        currency: canSeePrivateFinances ? m.currency : undefined,
         status: m.status,
         dueDate: m.dueDate?.toISOString(),
         createdAt: m.createdAt?.toISOString(),
         updatedAt: m.updatedAt?.toISOString(),
       })),
       revenueSplits: redactedSplits,
-      teamMemberIds: isMember || requesterRole === 'admin' ? project.teamMemberIds.map(id => id.toString()) : [],
+      teamMemberIds: canSeeTeamIds ? project.teamMemberIds.map(id => id.toString()) : [],
       teamMemberCount: project.teamMemberIds.length,
       createdAt: project.createdAt!.toISOString(),
       updatedAt: project.updatedAt!.toISOString(),
