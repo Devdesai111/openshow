@@ -61,7 +61,12 @@ const PayoutBatchSchema = new Schema<IPayoutBatch>(
       unique: true,
       default: () => `batch_${crypto.randomBytes(6).toString('hex')}`,
     },
-    escrowId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true }, // Idempotency key for scheduling
+    escrowId: {
+      type: Schema.Types.ObjectId,
+      required: true,
+      unique: true,
+      index: true,
+    }, // Idempotency key for scheduling
     projectId: { type: Schema.Types.ObjectId, ref: 'Project' },
     milestoneId: { type: Schema.Types.ObjectId },
     scheduledBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
@@ -79,5 +84,3 @@ const PayoutBatchSchema = new Schema<IPayoutBatch>(
 );
 
 export const PayoutBatchModel = model<IPayoutBatch>('PayoutBatch', PayoutBatchSchema);
-// Note: PayoutItem is embedded and already exported via interface above
-

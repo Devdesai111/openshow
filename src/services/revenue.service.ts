@@ -113,7 +113,7 @@ export class RevenueService {
 
     // Validate that we have at least one payout item
     if (payoutItems.length === 0) {
-      throw new Error('NoRecipients'); // All splits are placeholders
+      throw new Error('NoRecipientsForPayout'); // All splits are placeholders
     }
 
     // 4. Create Payout Batch Record

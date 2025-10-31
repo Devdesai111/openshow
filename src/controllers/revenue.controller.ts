@@ -81,7 +81,7 @@ export const calculatePreviewController = async (req: Request, res: Response): P
   }
 };
 
-// --- Schedule Payouts Validation ---
+// --- Payout Scheduling Validation ---
 
 export const schedulePayoutsValidation = [
   body('escrowId').isMongoId().withMessage('Escrow ID is required and must be valid Mongo ID.'),
@@ -111,7 +111,7 @@ export const schedulePayoutsController = async (req: Request, res: Response): Pr
     return ResponseBuilder.unauthorized(res, 'Authentication required');
   }
 
-  // Authorization Check: Must be Admin (Internal Call)
+  // Authorization Check: Must be System/Admin (Internal Call)
   if (requesterRole !== 'admin') {
     return ResponseBuilder.error(
       res,
@@ -157,22 +157,19 @@ export const schedulePayoutsController = async (req: Request, res: Response): Pr
         422
       );
     }
-    if (errorMessage === 'ProjectNotFound') {
-      return ResponseBuilder.notFound(res, 'Project');
-    }
-    if (errorMessage === 'RevenueModelNotFound') {
-      return ResponseBuilder.error(
-        res,
-        ErrorCode.VALIDATION_ERROR,
-        'Revenue model not found for the project.',
-        422
-      );
-    }
-    if (errorMessage === 'NoRecipients') {
+    if (errorMessage === 'NoRecipientsForPayout') {
       return ResponseBuilder.error(
         res,
         ErrorCode.VALIDATION_ERROR,
         'No valid recipients found for payout (all splits are placeholders).',
+        422
+      );
+    }
+    if (errorMessage === 'ProjectNotFound' || errorMessage === 'RevenueModelNotFound') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.VALIDATION_ERROR,
+        errorMessage === 'ProjectNotFound' ? 'Project not found.' : 'Revenue model not found for the project.',
         422
       );
     }
@@ -185,4 +182,3 @@ export const schedulePayoutsController = async (req: Request, res: Response): Pr
     );
   }
 };
-
