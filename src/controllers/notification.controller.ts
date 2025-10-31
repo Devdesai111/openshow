@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { body, param, validationResult } from 'express-validator';
+import { body, param, query, validationResult } from 'express-validator';
 import { NotificationService } from '../services/notification.service';
 import { NotificationTemplateModel } from '../models/notificationTemplate.model';
 import { ResponseBuilder } from '../utils/response-builder';
@@ -238,6 +238,116 @@ export const deleteTemplateController = async (req: Request, res: Response): Pro
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error deleting template.',
+      500
+    );
+  }
+};
+
+// --- User Interaction Validation ---
+
+export const listNotificationsValidation = [
+  query('status').optional().isIn(['read', 'unread', 'all']).withMessage('Status filter must be read, unread, or all.'),
+  query('page').optional().isInt({ min: 1 }).toInt(),
+  query('per_page').optional().isInt({ min: 1, max: 50 }).toInt(),
+];
+
+export const markReadValidation = [
+  body('ids').optional().isArray().withMessage('IDs must be an array of notification item IDs.'),
+  body('ids.*').optional().isString().withMessage('Each ID must be a string.'),
+  body('markAll').optional().isBoolean().withMessage('MarkAll must be a boolean.'),
+  body().custom(value => {
+    if (!value.ids && !value.markAll) {
+      throw new Error('Must provide either "ids" or set "markAll" to true.');
+    }
+    return true;
+  }),
+];
+
+// --- User Interaction Controllers ---
+
+/** Lists a user's notifications. GET /notifications */
+export const listUserNotificationsController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const list = await notificationService.listUserNotifications(requesterId, req.query);
+    return ResponseBuilder.success(res, list, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error listing notifications.',
+      500
+    );
+  }
+};
+
+/** Marks notifications as read. POST /notifications/mark-read */
+export const markReadController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { ids, markAll } = req.body;
+    await notificationService.markRead(requesterId, ids || [], markAll || false);
+
+    // Success (200 OK)
+    return ResponseBuilder.success(res, { status: 'ok', message: 'Notifications updated.' }, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error marking read.',
+      500
+    );
+  }
+};
+
+/** Retrieves the unread count. GET /notifications/unread-count */
+export const getUnreadCountController = async (req: Request, res: Response): Promise<void> => {
+  const requesterId = req.user?.sub;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const unreadCount = await notificationService.getUnreadCount(requesterId);
+
+    return ResponseBuilder.success(res, { unreadCount }, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error retrieving unread count.',
       500
     );
   }

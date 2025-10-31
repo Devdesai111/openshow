@@ -8,6 +8,11 @@ import {
   templateBaseValidation,
   templateIdParamValidation,
   previewTemplateValidation,
+  listUserNotificationsController,
+  markReadController,
+  getUnreadCountController,
+  listNotificationsValidation,
+  markReadValidation,
 } from '../controllers/notification.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -52,6 +57,15 @@ router.delete(
   deleteTemplateController
 );
 
-// ... (Future Task 50 endpoints for user-facing lists will be here) ...
+// --- User Interaction Endpoints (Task 47) ---
+
+// GET /notifications - List user's notifications
+router.get('/', authenticate, listNotificationsValidation, listUserNotificationsController);
+
+// POST /notifications/mark-read - Mark notifications as read
+router.post('/mark-read', authenticate, markReadValidation, markReadController);
+
+// GET /notifications/unread-count - Get unread count
+router.get('/unread-count', authenticate, getUnreadCountController);
 
 export default router;
