@@ -256,6 +256,7 @@ describe('Notification Queue Integration Tests', () => {
       // Act
       const response = await request(app)
         .post('/notifications/templates')
+        .set('Authorization', `Bearer ${adminAccessToken}`)
         .send({
           templateId: 'test.new.v1',
           name: 'Test Template',
