@@ -577,4 +577,48 @@ export class AuthService {
     console.warn(`[Event] User ${targetUserId} unsuspended.`);
     return user.toObject() as IUser;
   }
+
+  /**
+   * Confirms the reset token and updates the user's password.
+   * @throws {Error} - 'TokenInvalid' | 'TokenExpired' | 'TokenUsed' | 'UserNotFound'.
+   */
+  public async confirmPasswordReset(plainToken: string, newPassword: string): Promise<void> {
+    // 1. Find and validate the token record
+    const resetRecords = await PasswordResetModel.find({
+      isUsed: false,
+      expiresAt: { $gt: new Date() },
+    });
+
+    let matchedRecord = null;
+    for (const record of resetRecords) {
+      // ASYNC AWAIT: Compare plain token against stored hash
+      const isMatch = await compare(plainToken, record.tokenHash);
+      if (isMatch) {
+        matchedRecord = record;
+        break;
+      }
+    }
+
+    if (!matchedRecord) {
+      // Use generic 'TokenInvalid' to not distinguish between invalid/expired/used.
+      throw new Error('TokenInvalid');
+    }
+
+    // 2. Hash the new password
+    const newHashedPassword = await hash(newPassword, 10);
+
+    // 3. Update user password and invalidate all sessions (SECURITY: Logout everywhere)
+    await UserModel.updateOne(
+      { _id: matchedRecord.userId },
+      { $set: { hashedPassword: newHashedPassword } }
+    );
+
+    await AuthSessionModel.deleteMany({ userId: matchedRecord.userId }); // Revoke all sessions
+
+    // 4. Mark the reset token as used
+    await PasswordResetModel.updateOne({ _id: matchedRecord._id }, { $set: { isUsed: true } });
+
+    // PRODUCTION: Emit 'password.reset.confirmed' event for AuditLog (Task 60)
+    console.warn(`[Event] User ${matchedRecord.userId.toString()} successfully reset password.`);
+  }
 }

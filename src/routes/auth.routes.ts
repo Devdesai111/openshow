@@ -8,6 +8,8 @@ import {
   oauthValidation,
   requestPasswordResetController,
   passwordResetRequestValidation,
+  confirmPasswordResetController,
+  confirmPasswordResetValidation,
   refreshController,
   meController,
   logoutController,
@@ -43,6 +45,9 @@ router.post(
   passwordResetRequestValidation,
   requestPasswordResetController
 );
+
+// POST /auth/password-reset/confirm - Verify token and set new password (Task 7)
+router.post('/password-reset/confirm', confirmPasswordResetValidation, confirmPasswordResetController);
 
 // POST /auth/refresh - Exchange refresh token for new access token (Task 4)
 router.post('/refresh', refreshController);

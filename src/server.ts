@@ -5,6 +5,7 @@ import { connectDatabase } from './config/database';
 import { env } from './config/env';
 import authRoutes from './routes/auth.routes';
 import userRoutes from './routes/user.routes';
+import utilityRoutes from './routes/utility.routes';
 
 const app: Application = express();
 
@@ -14,14 +15,10 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Health check endpoint
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
 // Routes
 app.use('/auth', authRoutes);
 app.use('/users', userRoutes);
+app.use('/', utilityRoutes); // Health and metrics at root level
 
 // Start server
 async function startServer(): Promise<void> {

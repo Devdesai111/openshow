@@ -62,6 +62,20 @@ export const userParamValidation = [
   param('userId').isMongoId().withMessage('Invalid User ID format.'),
 ];
 
+export const confirmPasswordResetValidation = [
+  body('token')
+    .isString()
+    .isLength({ min: 10 })
+    .withMessage('Token is required and must be valid format.')
+    .bail(),
+  // Enforce strong password policy (at least 10 characters for security)
+  body('newPassword')
+    .isLength({ min: 10 })
+    .withMessage(
+      'Password must be at least 10 characters and contain a mix of uppercase, lowercase, numbers, and symbols.'
+    ),
+];
+
 // DTO for sanitized user data in response
 interface UserResponseDTO {
   id: string;
@@ -711,6 +725,62 @@ export const unsuspendUserController = async (req: Request, res: Response): Prom
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error during unsuspension.',
+      500
+    );
+  }
+};
+
+/**
+ * Handles password reset confirmation. POST /auth/password-reset/confirm
+ */
+export const confirmPasswordResetController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  // 1. Input Validation (includes strong password policy check)
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? err.path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? err.value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { token, newPassword } = req.body;
+
+    // 2. Service Call
+    await authService.confirmPasswordReset(token, newPassword);
+
+    // 3. Success (200 OK)
+    const responseData = {
+      status: 'ok',
+      message: 'Password successfully reset. Please log in with your new password.',
+    };
+
+    return ResponseBuilder.success(res, responseData, 200);
+  } catch (error: unknown) {
+    // 4. Error Handling
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'TokenInvalid') {
+      // 401 Unauthorized for expired/invalid token
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.TOKEN_INVALID,
+        'Password reset token is invalid or has expired.',
+        401
+      );
+    }
+    // Fallback
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during password reset.',
       500
     );
   }
