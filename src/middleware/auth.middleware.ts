@@ -82,3 +82,52 @@ export const authenticate = (req: Request, res: Response, next: NextFunction): v
     });
   }
 };
+
+/**
+ * Optional authentication middleware - allows requests to proceed without a token.
+ * If a valid token is provided, populates req.user. Otherwise, req.user remains undefined.
+ * Useful for public endpoints that need to show different data based on authentication status.
+ */
+export const optionalAuthenticate = (req: Request, _res: Response, next: NextFunction): void => {
+  const authHeader = req.headers.authorization;
+
+  // If no auth header, proceed without req.user
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    next();
+    return;
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  if (!token) {
+    next();
+    return;
+  }
+
+  try {
+    // Verify token if present
+    const decoded = verify(token, ACCESS_TOKEN_SECRET);
+
+    // Type guard to ensure decoded has required properties
+    if (
+      typeof decoded === 'object' &&
+      decoded !== null &&
+      'sub' in decoded &&
+      'role' in decoded &&
+      'email' in decoded
+    ) {
+      const authUser = decoded as IAuthUser;
+
+      // Populate req.user only if token is valid
+      if (authUser.sub && authUser.role && authUser.email) {
+        req.user = authUser;
+      }
+    }
+
+    // Always proceed (even if token is invalid, don't block request)
+    next();
+  } catch {
+    // If token is invalid/expired, just proceed without req.user
+    next();
+  }
+};

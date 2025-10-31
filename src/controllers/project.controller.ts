@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { body, param, validationResult } from 'express-validator';
+import { body, param, query, validationResult } from 'express-validator';
 import { ProjectService } from '../services/project.service';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -580,5 +580,132 @@ export const completeMilestoneController = async (req: Request, res: Response): 
     }
 
     return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error completing milestone.', 500);
+  }
+};
+
+// --- Project Read/List/Update Controllers ---
+
+export const projectParamValidation = [
+  param('projectId').isMongoId().withMessage('Invalid Project ID format.').bail(),
+];
+
+export const listProjectsValidation = [
+  query('status').optional().isIn(['draft', 'active', 'paused', 'completed', 'archived']).withMessage('Invalid status.'),
+  query('ownerId').optional().isMongoId().withMessage('Owner ID must be valid Mongo ID.'),
+  query('page').optional().isInt({ min: 1 }).toInt().withMessage('Page must be a positive integer.'),
+  query('per_page').optional().isInt({ min: 1, max: 100 }).toInt().withMessage('Per_page must be between 1 and 100.'),
+];
+
+export const updateProjectValidation = [
+  ...projectParamValidation,
+  body('title').optional().isString().isLength({ min: 5, max: 200 }).withMessage('Title 5-200 chars.'),
+  body('description').optional().isString().isLength({ max: 2000 }).withMessage('Description max 2000 chars.'),
+  body('category').optional().isString().isLength({ min: 1, max: 100 }).withMessage('Category 1-100 chars.'),
+  body('visibility').optional().isIn(['public', 'private']).withMessage('Visibility must be public or private.'),
+  body('status').optional().isIn(['draft', 'active', 'paused', 'completed', 'archived']).withMessage('Invalid status.'),
+];
+
+/** Lists projects. GET /projects */
+export const listProjectsController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const requesterId = req.user?.sub; // May be undefined if anonymous access
+    const list = await projectService.listProjects(requesterId, req.query);
+
+    return ResponseBuilder.success(res, list, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error listing projects.', 500);
+  }
+};
+
+/** Gets project details. GET /projects/:projectId */
+export const getProjectDetailsController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { projectId } = req.params;
+    if (!projectId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Project ID is required', 400);
+    }
+
+    const requesterId = req.user?.sub;
+    const requesterRole = req.user?.role;
+
+    const projectDetails = await projectService.getProjectDetails(projectId, requesterId, requesterRole);
+
+    return ResponseBuilder.success(res, projectDetails, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'ProjectNotFound' || errorMessage === 'PermissionDenied') {
+      // Return 404 for access denied on private projects (security)
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error fetching project details.', 500);
+  }
+};
+
+/** Updates the main project document. PUT /projects/:projectId */
+export const updateProjectController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId } = req.params;
+    if (!projectId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Project ID is required', 400);
+    }
+
+    const updatedProject = await projectService.updateProject(projectId, requesterId, req.body, requesterRole);
+
+    return ResponseBuilder.success(res, updatedProject, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(res, ErrorCode.PERMISSION_DENIED, 'Only the project owner can update the project.', 403);
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error updating project.', 500);
   }
 };

@@ -534,4 +534,242 @@ export class ProjectService {
 
     return this.getMilestone(updatedProject, milestoneId);
   }
+
+  // --- Read/Listing ---
+
+  /**
+   * Lists projects based on filters and requester role/membership.
+   * @param requesterId - Optional authenticated user ID
+   * @param queryParams - Filter and pagination parameters
+   * @returns Paginated list of projects with visibility filtering
+   */
+  public async listProjects(
+    requesterId?: string,
+    queryParams: {
+      status?: string;
+      ownerId?: string;
+      page?: number | string;
+      per_page?: number | string;
+    } = {}
+  ): Promise<{
+    data: any[];
+    pagination: {
+      page: number;
+      per_page: number;
+      total_items: number;
+      total_pages: number;
+      has_next: boolean;
+      has_prev: boolean;
+    };
+  }> {
+    const { status, ownerId, page = 1, per_page = 20 } = queryParams;
+    const filters: Record<string, any> = {};
+
+    // 1. Visibility Filters (Core RBAC for listings)
+    if (requesterId) {
+      // Authenticated users see public projects AND projects they are members of
+      filters.$or = [
+        { visibility: 'public' },
+        { ownerId: new Types.ObjectId(requesterId) },
+        { teamMemberIds: new Types.ObjectId(requesterId) }
+      ];
+    } else {
+      // Anonymous users only see public projects
+      filters.visibility = 'public';
+    }
+
+    // 2. Additional Filters
+    if (status) filters.status = status;
+    if (ownerId) filters.ownerId = new Types.ObjectId(ownerId);
+
+    // 3. Pagination and Execution
+    const limit = Math.min(Number(per_page) || 20, 100);
+    const pageNum = Number(page) || 1;
+    const skip = (pageNum - 1) * limit;
+
+    const [totalResults, projects] = await Promise.all([
+      ProjectModel.countDocuments(filters),
+      ProjectModel.find(filters)
+        .select('-milestones -revenueSplits') // Select minimal fields for list view
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    // 4. Map to List DTO (Redacted/Summarized)
+    const data = (projects as IProject[]).map(project => ({
+      projectId: project._id!.toString(),
+      title: project.title,
+      description: project.description,
+      category: project.category,
+      ownerId: project.ownerId.toString(),
+      status: project.status,
+      visibility: project.visibility,
+      collaborationType: project.collaborationType,
+      rolesSummary: project.roles.map(r => ({
+        title: r.title,
+        slots: r.slots,
+        filled: r.assignedUserIds.length
+      })),
+      teamMemberCount: project.teamMemberIds.length,
+      createdAt: project.createdAt!.toISOString(),
+      updatedAt: project.updatedAt!.toISOString(),
+    }));
+
+    const totalPages = Math.ceil(totalResults / limit) || 1;
+
+    return {
+      data,
+      pagination: {
+        page: pageNum,
+        per_page: limit,
+        total_items: totalResults,
+        total_pages: totalPages,
+        has_next: pageNum < totalPages,
+        has_prev: pageNum > 1,
+      },
+    };
+  }
+
+  /**
+   * Retrieves detailed information for a single project, applying visibility rules.
+   * @param projectId - Project ID to retrieve
+   * @param requesterId - Optional authenticated user ID
+   * @param requesterRole - Optional user role
+   * @throws {Error} - 'ProjectNotFound', 'PermissionDenied'
+   * @returns Project details with appropriate redaction
+   */
+  public async getProjectDetails(
+    projectId: string,
+    requesterId?: string,
+    requesterRole?: string
+  ): Promise<any> {
+    const project = await ProjectModel.findById(new Types.ObjectId(projectId)).lean() as IProject;
+    if (!project) {
+      throw new Error('ProjectNotFound');
+    }
+
+    const isMember = requesterId ? project.teamMemberIds.some(id => id.toString() === requesterId) : false;
+    const isPublic = project.visibility === 'public';
+
+    // 1. Authorization Check (403/404 for private projects if not member/admin)
+    if (!isMember && !isPublic && requesterRole !== 'admin') {
+      // For security, return 404 to avoid revealing project existence
+      throw new Error('PermissionDenied');
+    }
+
+    // 2. Redaction: Revenue Splits (Hiding user IDs for non-members)
+    const redactedSplits = project.revenueSplits.map(split => {
+      if (isMember || requesterRole === 'admin') {
+        return {
+          splitId: split._id?.toString(),
+          userId: split.userId?.toString(),
+          placeholder: split.placeholder,
+          percentage: split.percentage,
+          fixedAmount: split.fixedAmount,
+        }; // Full DTO for members
+      }
+      // Public/Non-member view: hide userId, show placeholder/percentage
+      return {
+        splitId: split._id?.toString(),
+        placeholder: split.placeholder || 'Contributor',
+        percentage: split.percentage,
+      };
+    });
+
+    // 3. Build DTO (Full/Redacted)
+    const detailDTO = {
+      projectId: project._id!.toString(),
+      ownerId: project.ownerId.toString(),
+      title: project.title,
+      description: project.description,
+      category: project.category,
+      visibility: project.visibility,
+      collaborationType: project.collaborationType,
+      status: project.status,
+      coverAssetId: project.coverAssetId?.toString(),
+      roles: project.roles.map(r => ({
+        roleId: r._id!.toString(),
+        title: r.title,
+        description: r.description,
+        slots: r.slots,
+        filled: r.assignedUserIds.length,
+        assignedUserIds: isMember || requesterRole === 'admin' ? r.assignedUserIds.map(id => id.toString()) : [], // Hide member IDs if non-member
+        requiredSkills: r.requiredSkills,
+      })),
+      milestones: project.milestones.map(m => ({
+        milestoneId: m._id!.toString(),
+        title: m.title,
+        description: m.description,
+        amount: m.amount,
+        currency: m.currency,
+        status: m.status,
+        dueDate: m.dueDate?.toISOString(),
+        createdAt: m.createdAt?.toISOString(),
+        updatedAt: m.updatedAt?.toISOString(),
+      })),
+      revenueSplits: redactedSplits,
+      teamMemberIds: isMember || requesterRole === 'admin' ? project.teamMemberIds.map(id => id.toString()) : [],
+      teamMemberCount: project.teamMemberIds.length,
+      createdAt: project.createdAt!.toISOString(),
+      updatedAt: project.updatedAt!.toISOString(),
+    };
+
+    return detailDTO;
+  }
+
+  /**
+   * Updates the main project document.
+   * @param projectId - Project ID to update
+   * @param requesterId - User ID updating (must be owner)
+   * @param updateData - Fields to update
+   * @param requesterRole - User role for admin check
+   * @throws {Error} - 'PermissionDenied', 'ProjectNotFound'
+   * @returns Updated project details
+   */
+  public async updateProject(
+    projectId: string,
+    requesterId: string,
+    updateData: {
+      title?: string;
+      description?: string;
+      visibility?: 'public' | 'private';
+      status?: string;
+      category?: string;
+    },
+    requesterRole?: string
+  ): Promise<any> {
+    // 1. Owner Access Check (handles ProjectNotFound and PermissionDenied)
+    const project = await this.checkOwnerAccess(projectId, requesterId, requesterRole);
+
+    // 2. Build Update Object (Filter allowed fields)
+    const update: Record<string, any> = {};
+    if (updateData.title !== undefined) update.title = updateData.title;
+    if (updateData.description !== undefined) update.description = updateData.description;
+    if (updateData.visibility !== undefined) update.visibility = updateData.visibility;
+    if (updateData.status !== undefined) update.status = updateData.status;
+    if (updateData.category !== undefined) update.category = updateData.category;
+
+    // NOTE: Updating roles embedded array requires special handling
+    // For simplicity in this task, roles array updates are deferred to future tasks
+
+    // 3. Execute Update
+    const updatedProject = await ProjectModel.findOneAndUpdate(
+      { _id: project._id },
+      { $set: update },
+      { new: true }
+    );
+
+    if (!updatedProject) {
+      throw new Error('UpdateFailed');
+    }
+
+    // 4. Trigger Events
+    // PRODUCTION: Emit 'project.updated' event (Task 16 subscribes for indexing)
+    console.warn(`[Event] Project ${projectId} updated. Visibility: ${updatedProject.visibility}`);
+
+    // 5. Return updated DTO (use the detailed getter)
+    return this.getProjectDetails(projectId, requesterId, requesterRole);
+  }
 }

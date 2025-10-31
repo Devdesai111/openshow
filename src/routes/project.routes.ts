@@ -16,12 +16,45 @@ import {
   completeMilestoneController,
   completeMilestoneValidation,
   milestoneParamValidation,
+  listProjectsController,
+  getProjectDetailsController,
+  updateProjectController,
+  projectParamValidation,
+  updateProjectValidation,
+  listProjectsValidation,
 } from '../controllers/project.controller';
-import { authenticate } from '../middleware/auth.middleware';
+import { authenticate, optionalAuthenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../config/permissions';
 
 const router = Router();
+
+// --- Project Read/List Endpoints (Task 15) ---
+
+// GET /projects - List projects (Public/Auth filtered)
+router.get(
+  '/',
+  optionalAuthenticate, // Optional auth for context (member vs. anonymous)
+  listProjectsValidation,
+  listProjectsController
+);
+
+// GET /projects/:projectId - Get project details (Public/Member visibility-aware)
+router.get(
+  '/:projectId',
+  projectParamValidation,
+  optionalAuthenticate, // Optional auth for context (member vs. anonymous)
+  getProjectDetailsController
+);
+
+// PUT /projects/:projectId - Update project (Owner only)
+router.put(
+  '/:projectId',
+  authenticate,
+  authorize([PERMISSIONS.PROJECT_CREATE]), // Owner/admin access
+  updateProjectValidation,
+  updateProjectController
+);
 
 // --- Protected Project Creation ---
 
