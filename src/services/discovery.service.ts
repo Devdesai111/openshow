@@ -4,6 +4,17 @@ import { IUser } from '../models/user.model';
 import { PaginatedResponse, PaginationMeta } from '../types/pagination-dtos';
 import { ProjectModel, IProject } from '../models/project.model';
 
+// Placeholder for the Index Document (Simulating a document in ElasticSearch/OpenSearch)
+// PRODUCTION: This would be the actual ES/OpenSearch client interaction.
+const MockSearchIndexStore = new Map<string, any>();
+
+interface IIndexDocumentRequest {
+  docType: 'creator' | 'project';
+  docId: string;
+  payload: Record<string, any>;
+  updatedAt: string;
+}
+
 export interface CreatorListItemDTO {
   id: string;
   userId: string;
@@ -186,6 +197,58 @@ export class DiscoveryService {
     };
 
     return { data, pagination };
+  }
+
+  /**
+   * Updates or creates a document in the search index with out-of-order protection.
+   * @param data - Index document request with docType, docId, payload, and updatedAt
+   * @throws {Error} - 'StaleUpdate' if incoming updatedAt is older than the current index record
+   */
+  public async indexDocument(data: IIndexDocumentRequest): Promise<void> {
+    const { docType, docId, payload, updatedAt } = data;
+    const indexKey = `${docType}_${docId}`;
+    const newUpdatedAt = new Date(updatedAt);
+
+    // 1. Check for Stale/Out-of-Order Update (CRITICAL)
+    const currentDoc = MockSearchIndexStore.get(indexKey);
+
+    if (currentDoc && currentDoc.updatedAt && newUpdatedAt <= new Date(currentDoc.updatedAt)) {
+      // New update is older or same as current indexed document, ignore.
+      console.warn(`[Index] Stale update rejected for ${indexKey}. Current: ${currentDoc.updatedAt}, Incoming: ${updatedAt}`);
+      throw new Error('StaleUpdate');
+    }
+
+    // 2. Merge/Upsert Logic (Simulate partial update and indexing)
+    const newDoc = {
+      ...currentDoc,
+      ...payload,
+      docId,
+      docType,
+      updatedAt: newUpdatedAt.toISOString(),
+    };
+
+    MockSearchIndexStore.set(indexKey, newDoc);
+
+    // PRODUCTION: Call ElasticSearch/OpenSearch Client:
+    // esClient.update({ index: docType, id: docId, body: { doc: payload, doc_as_upsert: true } });
+
+    console.warn(`[Index] Document ${indexKey} successfully indexed/updated.`);
+  }
+
+  /**
+   * Exposes the mock search index store for testing purposes.
+   * @internal This should only be used in tests
+   */
+  public _getMockIndexStore(): Map<string, any> {
+    return MockSearchIndexStore;
+  }
+
+  /**
+   * Clears the mock search index store for testing purposes.
+   * @internal This should only be used in tests
+   */
+  public _clearMockIndexStore(): void {
+    MockSearchIndexStore.clear();
   }
 }
 

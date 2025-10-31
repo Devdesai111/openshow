@@ -30,6 +30,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/auth', authRoutes);
 app.use('/users', userProfileRoutes);
 app.use('/market', discoveryRoutes); // Marketplace/Discovery routes (Task 10, 16)
+app.use('/search', discoveryRoutes); // Search indexing routes (Task 41) - uses same router
 app.use('/notifications', notificationRoutes);
 app.use('/projects', projectRoutes);
 app.use('/projects', collaborationRoutes); // Collaboration routes (Task 17)

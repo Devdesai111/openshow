@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { query, validationResult } from 'express-validator';
+import { body, query, validationResult } from 'express-validator';
 import { DiscoveryService } from '../services/discovery.service';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -74,6 +74,70 @@ export const searchProjectsController = async (req: Request, res: Response): Pro
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'An unexpected error occurred during project search.',
+      500
+    );
+  }
+};
+
+// --- Validation Middleware ---
+
+export const indexUpdateValidation = [
+  body('docType').isIn(['creator', 'project']).withMessage('Invalid document type.'),
+  body('docId').isMongoId().withMessage('Document ID must be a valid Mongo ID.'),
+  body('updatedAt').isISO8601().withMessage('Updated date is required and must be ISO 8601 format.'),
+  body('payload').isObject().withMessage('Payload must be an object with fields to update.'),
+];
+
+// --- Internal Indexing Controller ---
+
+/** Internal endpoint for indexing updates. POST /search/index-update */
+export const indexUpdateController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    // Service Call (handles out-of-order check)
+    await discoveryService.indexDocument(req.body);
+
+    // Success (200 OK)
+    return ResponseBuilder.success(
+      res,
+      {
+        docId: req.body.docId,
+        status: 'indexed',
+        updatedAt: req.body.updatedAt,
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    // Error Handling
+    if (errorMessage === 'StaleUpdate') {
+      // Return 200 to the message broker/service to acknowledge the event was processed (even if skipped)
+      return ResponseBuilder.success(
+        res,
+        {
+          status: 'ignored',
+          message: 'Update ignored as it is older than the current indexed document.',
+        },
+        200
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during indexing process.',
       500
     );
   }
