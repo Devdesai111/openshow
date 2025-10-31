@@ -3,6 +3,7 @@ import { CreatorProfileModel, ICreatorProfile } from '../models/creatorProfile.m
 import { IUser } from '../models/user.model';
 import { PaginatedResponse, PaginationMeta } from '../types/pagination-dtos';
 import { ProjectModel, IProject } from '../models/project.model';
+import { getCurrentRankingWeights } from '../config/rankingWeights';
 
 // Placeholder for the Index Document (Simulating a document in ElasticSearch/OpenSearch)
 // PRODUCTION: This would be the actual ES/OpenSearch client interaction.
@@ -249,6 +250,37 @@ export class DiscoveryService {
    */
   public _clearMockIndexStore(): void {
     MockSearchIndexStore.clear();
+  }
+
+  /**
+   * Applies the current blended ranking formula to a search document.
+   * NOTE: This is a utility function used in search query builder (simulated).
+   * @param document - Document to rank (creator or project)
+   * @param textRelevanceScore - Text relevance score from search engine (0..1)
+   * @param experimentId - Optional experiment ID for A/B testing
+   * @returns Final blended score (0..100)
+   */
+  public applyBlendedRanking(document: any, textRelevanceScore: number, experimentId?: string): number {
+    const weights = getCurrentRankingWeights(experimentId);
+
+    // --- Calculate Signals (Mock/Placeholder Logic) ---
+    // Trust Signal: Function of Verified + Rating (normalized 0..1)
+    const trustSignal = (document.verified ? 1 : 0) * 0.5 + ((document.rating?.average || 0) / 5) * 0.5;
+
+    // Recency Signal: Simple high value for recent update (normalized 0..1)
+    const recencySignal =
+      Date.now() - new Date(document.updatedAt || 0).getTime() < 30 * 24 * 60 * 60 * 1000 ? 1 : 0.2;
+
+    // --- Apply Blended Formula ---
+    const finalScore =
+      weights.alpha * textRelevanceScore +
+      weights.beta * trustSignal +
+      weights.gamma * recencySignal +
+      weights.delta * 0.5 + // Mock Activity
+      weights.epsilon * (document.sponsoredBoost || 0);
+
+    // Normalize to a 0-100 range for client display
+    return Math.min(100, Math.round(finalScore * 100));
   }
 }
 

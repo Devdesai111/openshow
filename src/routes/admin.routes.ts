@@ -5,6 +5,8 @@ import {
   listAdminPayoutBatchesController,
   adminLedgerValidation,
   adminBatchValidation,
+  updateRankingWeightsController,
+  updateRankingWeightsValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -31,6 +33,17 @@ router.get(
   authorize(financeAccess),
   adminBatchValidation,
   listAdminPayoutBatchesController
+);
+
+// --- Admin Configuration Endpoints (Task 42) ---
+
+// PUT /admin/ranking/weights - Update A/B ranking weights
+router.put(
+  '/ranking/weights',
+  authenticate,
+  authorize(financeAccess), // RBAC check
+  updateRankingWeightsValidation,
+  updateRankingWeightsController
 );
 
 // ... Future Admin endpoints (moderation, reconciliation, manual ops) go here ...
