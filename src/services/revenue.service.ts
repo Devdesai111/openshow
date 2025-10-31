@@ -3,14 +3,18 @@ import { ProjectModel, IProject } from '../models/project.model';
 import { calculateRevenueSplit } from '../utils/revenueCalculator';
 import { PayoutBatchModel, IPayoutBatch, IPayoutItem } from '../models/payout.model';
 import { IAuthUser } from '../middleware/auth.middleware';
+import { getExponentialBackoffDelay, isRetryAllowed } from '../utils/retryPolicy';
 import { Types } from 'mongoose';
 import * as crypto from 'crypto';
 
 // Mock Job Queue for payout execution (Task 58 dependency)
 class MockJobQueue {
-  public enqueuePayoutJob(batchId: string): string {
-    console.warn(`[Job Enqueued] Payout execution for Batch ${batchId}.`);
+  public enqueuePayoutJob(batchId: string, delayMs: number = 0): string {
+    console.warn(`[Job Enqueued] Payout execution for Batch ${batchId} scheduled in ${delayMs / 1000}s.`);
     return `job_payout_${crypto.randomBytes(4).toString('hex')}`;
+  }
+  public enqueueEscalationJob(payoutItemId: string, reason: string): void {
+    console.warn(`[Job Enqueued] ADMIN ESCALATION for Payout ${payoutItemId}. Reason: ${reason}`);
   }
 }
 const jobQueue = new MockJobQueue();
@@ -419,6 +423,109 @@ export class RevenueService {
       },
       data,
     };
+  }
+
+  /**
+   * Handles a permanent payout failure (e.g., invalid bank account, KYC failure) reported by PSP webhook.
+   * @param payoutItemId - Payout item ID
+   * @param reason - Reason for failure
+   */
+  public async handlePayoutFailure(payoutItemId: string, reason: string): Promise<void> {
+    const itemObjectId = new Types.ObjectId(payoutItemId);
+
+    // 1. Find the parent batch and item
+    const batch = await PayoutBatchModel.findOne({ 'items._id': itemObjectId });
+    if (!batch) {
+      return; // Safety check
+    }
+
+    const itemIndex = batch.items.findIndex(i => i._id?.equals(itemObjectId));
+    const item = batch.items[itemIndex];
+
+    if (!item || item.status === 'paid' || item.status === 'cancelled') {
+      return; // State check
+    }
+
+    // 2. Determine Next Action (Retry or Escalate)
+    const nextAttempt = item.attempts + 1;
+
+    if (isRetryAllowed(nextAttempt)) {
+      // A. RETRY LOGIC (Self-correction for transient failure)
+      const delay = getExponentialBackoffDelay(nextAttempt);
+
+      // Update item status/attempts directly
+      const itemToUpdate = batch.items[itemIndex];
+      if (!itemToUpdate) return; // Safety check
+      itemToUpdate.status = 'scheduled';
+      itemToUpdate.attempts = nextAttempt;
+      itemToUpdate.failureReason = reason;
+
+      // Enqueue job with calculated delay
+      jobQueue.enqueuePayoutJob(batch.batchId, delay);
+      console.warn(`[Payout Retry] Item ${payoutItemId} failed (Attempt ${nextAttempt}). Re-queued with ${delay}ms delay.`);
+    } else {
+      // B. ESCALATION LOGIC (Permanent Failure)
+      const itemToUpdate = batch.items[itemIndex];
+      if (!itemToUpdate) return; // Safety check
+      itemToUpdate.status = 'failed';
+      itemToUpdate.attempts = nextAttempt; // Increment attempts to MAX_ATTEMPTS
+      itemToUpdate.failureReason = `Permanent failure after ${nextAttempt} attempts: ${reason}`;
+
+      // Trigger Admin Escalation Job (Task 60)
+      jobQueue.enqueueEscalationJob(payoutItemId, `MAX_ATTEMPTS reached. Reason: ${reason}`);
+      console.warn(`[Payout Escalated] Item ${payoutItemId} escalated to admin DLQ.`);
+    }
+
+    // 3. Save the batch document and update overall batch status (if completed/partial)
+    await batch.save();
+    // PRODUCTION: Logic to update batch.status to 'partial' or 'completed' would go here
+  }
+
+  /**
+   * Admin/System-driven manual re-execution of a failed payout item.
+   * @param payoutItemId - Payout item ID
+   * @param requesterId - User ID of requester
+   * @returns Updated payout item
+   * @throws {Error} - 'PayoutNotFound', 'PayoutAlreadyActive'
+   */
+  public async retryPayoutItem(payoutItemId: string, requesterId: string): Promise<IPayoutItem> {
+    const itemObjectId = new Types.ObjectId(payoutItemId);
+
+    const batch = await PayoutBatchModel.findOne({ 'items._id': itemObjectId });
+    if (!batch) {
+      throw new Error('PayoutNotFound');
+    }
+
+    const itemIndex = batch.items.findIndex(i => i._id?.equals(itemObjectId));
+    const item = batch.items[itemIndex];
+
+    if (!item) {
+      throw new Error('PayoutNotFound');
+    }
+    if (item.status === 'paid' || item.status === 'processing') {
+      throw new Error('PayoutAlreadyActive');
+    }
+
+    // 1. Reset/Increment State
+    const nextAttempt = item.attempts + 1;
+    const itemToUpdate = batch.items[itemIndex];
+    if (!itemToUpdate) {
+      throw new Error('PayoutNotFound');
+    }
+    itemToUpdate.status = 'processing'; // Ready for immediate processing
+    itemToUpdate.attempts = nextAttempt;
+    // Clear reason/failure for new attempt
+    itemToUpdate.failureReason = undefined;
+
+    await batch.save();
+
+    // 2. Enqueue for IMMEDIATE execution (0 delay)
+    jobQueue.enqueuePayoutJob(batch.batchId, 0);
+
+    // PRODUCTION: AuditLog 'payout.retry.initiated'
+    console.warn(`[Audit] Payout ${payoutItemId} manually retried by ${requesterId} (Attempt ${nextAttempt}).`);
+
+    return itemToUpdate;
   }
 }
 

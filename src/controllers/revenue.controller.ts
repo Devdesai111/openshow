@@ -278,3 +278,85 @@ export const getPayoutDetailsController = async (req: Request, res: Response): P
     );
   }
 };
+
+// --- Validation Middleware ---
+
+export const retryPayoutValidation = [
+  param('payoutItemId').isMongoId().withMessage('Payout Item ID is required and must be valid Mongo ID.'),
+];
+
+// --- Payout Management Controllers ---
+
+/** Admin/System manually retries a failed payout. POST /revenue/payouts/:id/retry */
+export const retryPayoutController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  // 1. Authorization Check (Admin/Finance Role)
+  if (requesterRole !== 'admin') {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.PERMISSION_DENIED,
+      'Access denied. Endpoint is for admin/system use only.',
+      403
+    );
+  }
+
+  try {
+    const { payoutItemId } = req.params;
+    if (!payoutItemId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Payout Item ID is required', 400);
+    }
+
+    // 2. Service Call
+    const updatedItem = await revenueService.retryPayoutItem(payoutItemId, requesterId);
+
+    // 3. Success (200 OK)
+    return ResponseBuilder.success(
+      res,
+      {
+        payoutItemId: updatedItem._id!.toString(),
+        status: updatedItem.status,
+        attempts: updatedItem.attempts,
+        message: 'Payout re-queued for immediate execution.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PayoutNotFound') {
+      return ResponseBuilder.notFound(res, 'Payout');
+    }
+    if (errorMessage === 'PayoutAlreadyActive') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Payout is already paid or processing.',
+        409
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during payout retry.',
+      500
+    );
+  }
+};

@@ -9,6 +9,8 @@ import {
   getPayoutDetailsController,
   payoutsReadValidation,
   payoutItemIdValidation,
+  retryPayoutController,
+  retryPayoutValidation,
 } from '../controllers/revenue.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -46,6 +48,15 @@ router.get(
   authenticate,
   payoutItemIdValidation,
   getPayoutDetailsController
+);
+
+// POST /revenue/payouts/:payoutItemId/retry - Admin/System manually retries a failed payout (Task 40)
+router.post(
+  '/payouts/:payoutItemId/retry',
+  authenticate,
+  authorize([PERMISSIONS.FINANCE_MANAGE]), // RBAC check
+  retryPayoutValidation,
+  retryPayoutController
 );
 
 export default router;
