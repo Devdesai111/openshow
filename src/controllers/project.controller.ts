@@ -709,3 +709,121 @@ export const updateProjectController = async (req: Request, res: Response): Prom
     return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error updating project.', 500);
   }
 };
+
+// --- Final Project Mutators/Readers (Task 29) ---
+
+/** Archives a project (soft delete). DELETE /projects/:projectId */
+export const archiveProjectController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId } = req.params as { projectId: string };
+
+    await projectService.archiveProject(projectId, requesterId, requesterRole);
+
+    return ResponseBuilder.noContent(res); // 204 No Content on successful archiving
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'Only the project owner or an Admin can archive this project.',
+        403
+      );
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+    if (errorMessage === 'ActiveEscrowConflict') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Project cannot be archived due to active escrow funds.',
+        409
+      );
+    }
+    if (errorMessage === 'ArchiveFailed') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.INTERNAL_SERVER_ERROR,
+        'Failed to archive project.',
+        500
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during archiving.',
+      500
+    );
+  }
+};
+
+/** Retrieves the denormalized team list. GET /projects/:projectId/team */
+export const getTeamMembersController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId } = req.params as { projectId: string };
+
+    const teamDetails = await projectService.getTeamMembers(projectId, requesterId, requesterRole);
+
+    return ResponseBuilder.success(res, teamDetails, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'You must be a project member to view the team list.',
+        403
+      );
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error retrieving team list.',
+      500
+    );
+  }
+};

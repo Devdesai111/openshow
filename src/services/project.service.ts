@@ -1,7 +1,7 @@
 import { Types } from 'mongoose';
 import { ProjectModel, IProject, IRevenueSplit } from '../models/project.model';
 import { ProjectInviteModel, ProjectApplicationModel, IProjectInvite, IProjectApplication } from '../models/projectApplication.model';
-import { UserModel } from '../models/user.model';
+import { UserModel, IUser } from '../models/user.model';
 
 interface ICreateProjectRequestDTO {
   title: string;
@@ -805,32 +805,99 @@ export class ProjectService {
   /**
    * Archives a project (sets status to 'archived' and visibility to 'private').
    * @param projectId - Project ID to archive
-   * @param requesterId - User ID archiving (must be owner)
+   * @param requesterId - User ID archiving (must be owner or admin)
    * @param requesterRole - User role for admin check
-   * @throws {Error} - 'PermissionDenied', 'ProjectNotFound'
+   * @throws {Error} - 'PermissionDenied', 'ProjectNotFound', 'ActiveEscrowConflict'
    */
   public async archiveProject(
     projectId: string,
     requesterId: string,
     requesterRole?: string
   ): Promise<void> {
-    // 1. Owner Access Check
-    await this.checkOwnerAccess(projectId, requesterId, requesterRole);
+    // 1. Owner/Admin Access Check
+    const project = await this.checkOwnerAccess(projectId, requesterId, requesterRole);
 
-    // 2. Archive Project
+    // 2. BUSINESS RULE: Check for Active Escrows/Funded Milestones
+    const hasActiveFunds = project.milestones.some(
+      m => m.escrowId && m.status !== 'approved' && m.status !== 'rejected'
+    );
+    if (hasActiveFunds) {
+      throw new Error('ActiveEscrowConflict');
+    }
+
+    // 3. Execute Soft Delete/Archive
     const result = await ProjectModel.updateOne(
-      { _id: new Types.ObjectId(projectId) },
+      { _id: project._id },
       { $set: { status: 'archived', visibility: 'private' } }
     );
 
     if (result.modifiedCount === 0) {
-      throw new Error('ProjectNotFound');
+      throw new Error('ArchiveFailed');
     }
 
-    // 3. Emit archive event for index removal (Task 16)
+    // 4. Emit archive event for index removal (Task 16)
     eventEmitter.emit('project.archived', { projectId });
 
     // PRODUCTION: Check for and handle pending escrows (Task 35)
-    console.warn(`[Event] Project ${projectId} archived.`);
+    console.warn(`[Event] Project ${projectId} archived by ${requesterId}.`);
+  }
+
+  /**
+   * Retrieves the full, denormalized team member list.
+   * @param projectId - Project ID
+   * @param requesterId - User ID requesting (must be member or admin)
+   * @param requesterRole - User role for admin check
+   * @returns Team member list with denormalized user data
+   * @throws {Error} - 'ProjectNotFound', 'PermissionDenied'
+   */
+  public async getTeamMembers(
+    projectId: string,
+    requesterId: string,
+    requesterRole?: string
+  ): Promise<{
+    projectId: string;
+    team: Array<{
+      userId: string;
+      displayName: string;
+      roleIds: string[];
+      roleTitles: string[];
+      isOwner: boolean;
+    }>;
+  }> {
+    const project = (await ProjectModel.findById(new Types.ObjectId(projectId)).lean()) as IProject | null;
+    if (!project) {
+      throw new Error('ProjectNotFound');
+    }
+
+    const isMember = project.teamMemberIds.some(id => id.toString() === requesterId);
+    const isAdmin = requesterRole === 'admin';
+
+    // 1. Authorization Check (Member/Admin only)
+    if (!isMember && !isAdmin) {
+      throw new Error('PermissionDenied');
+    }
+
+    // 2. Denormalize User Data (Fetch all users in one go)
+    const teamMemberIds = project.teamMemberIds.map(id => id);
+    const users = (await UserModel.find({ _id: { $in: teamMemberIds } })
+      .select('preferredName fullName email role')
+      .lean()) as IUser[];
+
+    // 3. Map user data to roles/project context
+    const team = users.map(user => {
+      const userRoles = project.roles.filter(r =>
+        r.assignedUserIds.some(id => id.toString() === user._id!.toString())
+      ).map(r => ({ roleId: r._id!.toString(), title: r.title }));
+
+      return {
+        userId: user._id!.toString(),
+        displayName: user.preferredName || user.fullName || user.email,
+        roleIds: userRoles.map(r => r.roleId),
+        roleTitles: userRoles.map(r => r.title),
+        isOwner: project.ownerId.toString() === user._id!.toString(),
+      };
+    });
+
+    return { projectId: project._id!.toString(), team };
   }
 }

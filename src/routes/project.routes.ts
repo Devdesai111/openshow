@@ -22,6 +22,8 @@ import {
   projectParamValidation,
   updateProjectValidation,
   listProjectsValidation,
+  archiveProjectController,
+  getTeamMembersController,
 } from '../controllers/project.controller';
 import { listProjectAssetsController, listProjectAssetsValidation } from '../controllers/asset.controller';
 import { authenticate, optionalAuthenticate } from '../middleware/auth.middleware';
@@ -143,6 +145,26 @@ router.get(
   authenticate,
   listProjectAssetsValidation,
   listProjectAssetsController
+);
+
+// --- Project Finalization Endpoints (Task 29) ---
+
+// DELETE /projects/:projectId - Archive project (Owner/Admin only)
+// NOTE: Owner/admin check is handled in the service (checkOwnerAccess)
+router.delete(
+  '/:projectId',
+  authenticate,
+  projectParamValidation,
+  archiveProjectController
+);
+
+// GET /projects/:projectId/team - List team members (Member/Admin only)
+router.get(
+  '/:projectId/team',
+  authenticate,
+  projectParamValidation,
+  // NOTE: Membership check is handled in the service
+  getTeamMembersController
 );
 
 export default router;
