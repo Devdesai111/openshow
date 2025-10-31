@@ -1,6 +1,10 @@
 import { AgreementModel, IAgreement, ISigner, IPayloadJson } from '../models/agreement.model';
 import { ProjectModel, IProject } from '../models/project.model';
+import { AssetService } from './asset.service';
+import { IAuthUser } from '../middleware/auth.middleware';
 import { Types } from 'mongoose';
+
+const assetService = new AssetService();
 
 // Mock Job/Event Emitter
 class MockJobQueue {
@@ -221,6 +225,86 @@ export class AgreementService {
     });
 
     return updatedAgreementObj;
+  }
+
+  /**
+   * Checks if the requester is a Signer, Project Member, or Admin.
+   * @param agreement - Agreement document
+   * @param requesterId - User ID or email
+   * @param requesterRole - User role
+   * @throws {Error} 'PermissionDenied'
+   */
+  private async checkDocumentAccess(
+    agreement: IAgreement,
+    requesterId: string,
+    requesterRole: IAuthUser['role']
+  ): Promise<void> {
+    const isSigner = agreement.signers.some(
+      s => (s.signerId && s.signerId.toString() === requesterId) || s.email === requesterId
+    );
+    const isAdmin = requesterRole === 'admin';
+
+    // Check Project Membership
+    const project = (await ProjectModel.findById(agreement.projectId)
+      .select('teamMemberIds')
+      .lean()) as IProject | null;
+    const isMember = project?.teamMemberIds.some(id => id.toString() === requesterId) || false;
+
+    if (!isSigner && !isMember && !isAdmin) {
+      throw new Error('PermissionDenied');
+    }
+  }
+
+  /**
+   * Retrieves the secure signed PDF download URL.
+   * @param agreementId - Agreement ID (short string)
+   * @param requesterId - User ID or email
+   * @param requesterRole - User role
+   * @returns Download URL response
+   * @throws {Error} - 'AgreementNotFound', 'PermissionDenied', 'DocumentNotFinalized', 'PdfAssetPending'
+   */
+  public async getSignedPdfUrl(
+    agreementId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role']
+  ): Promise<{
+    downloadUrl: string | null;
+    downloadUrlExpiresAt: string | null;
+    filename: string;
+  }> {
+    // 1. Fetch Agreement
+    const agreement = await AgreementModel.findOne({ agreementId }).lean() as IAgreement | null;
+    if (!agreement) {
+      throw new Error('AgreementNotFound');
+    }
+
+    // 2. Authorization Check
+    await this.checkDocumentAccess(agreement, requesterId, requesterRole);
+
+    // 3. Status Check (Must be fully signed and PDF asset generated)
+    if (agreement.status !== 'signed') {
+      throw new Error('DocumentNotFinalized'); // Explicit 409 conflict
+    }
+    if (!agreement.pdfAssetId) {
+      // Document is signed, but PDF generation job (Task 55) has not completed yet
+      throw new Error('PdfAssetPending'); // Explicit 409 conflict/202 accepted
+    }
+
+    // 4. Retrieve Signed URL from Asset Service (Decoupling)
+    // AssetService.getAssetAndSignedDownloadUrl already performs access checks
+    const assetDetails = await assetService.getAssetAndSignedDownloadUrl(
+      agreement.pdfAssetId.toString(),
+      requesterId,
+      requesterRole,
+      true // Ensure presign is true
+    );
+
+    // 5. Return Download DTO
+    return {
+      downloadUrl: assetDetails.downloadUrl || null,
+      downloadUrlExpiresAt: assetDetails.downloadUrlExpiresAt || null,
+      filename: `Agreement-${agreement.agreementId}.pdf`,
+    };
   }
 }
 

@@ -216,3 +216,70 @@ export const signAgreementController = async (req: Request, res: Response): Prom
   }
 };
 
+// --- PDF Download Validation ---
+
+export const agreementIdParamValidation = [
+  param('agreementId').isString().withMessage('Agreement ID is required.').bail(),
+];
+
+/** Handles the agreement PDF download request. GET /agreements/:agreementId/pdf */
+export const downloadPdfController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { agreementId } = req.params as { agreementId: string };
+
+    // Service Call
+    const downloadData = await agreementService.getSignedPdfUrl(agreementId, requesterId, requesterRole);
+
+    // Success (200 OK)
+    return ResponseBuilder.success(res, downloadData, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'You are not authorized to download this agreement.',
+        403
+      );
+    }
+    if (errorMessage === 'AgreementNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Agreement not found.', 404);
+    }
+    if (errorMessage === 'DocumentNotFinalized' || errorMessage === 'PdfAssetPending') {
+      // Use 409 Conflict to indicate document exists but is not in the final, ready-to-download state
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Document is not yet fully signed or the final PDF is still being generated.',
+        409
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error retrieving PDF.',
+      500
+    );
+  }
+};
+
