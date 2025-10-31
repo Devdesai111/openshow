@@ -283,3 +283,73 @@ export const downloadPdfController = async (req: Request, res: Response): Promis
   }
 };
 
+// --- Hash Storage Validation ---
+
+export const storeHashValidation = [
+  param('agreementId').isString().withMessage('Agreement ID is required.'),
+  body('anchorChain').isBoolean().withMessage('AnchorChain flag is required and must be boolean.'),
+];
+
+/** Stores the immutable hash and triggers optional anchoring. POST /agreements/:agreementId/hash */
+export const storeHashController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { agreementId } = req.params as { agreementId: string };
+
+    // Service Call
+    const result = await agreementService.storeImmutableHash(
+      agreementId,
+      requesterId,
+      req.body.anchorChain
+    );
+
+    // Success (200 OK)
+    return ResponseBuilder.success(res, result, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'AgreementNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Agreement not found.', 404);
+    }
+    if (errorMessage === 'NotFullySigned') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Agreement must be fully signed before hash can be immutably stored.',
+        409
+      );
+    }
+    if (errorMessage === 'AlreadyHashed') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Immutable hash is already stored for this agreement.',
+        409
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error storing immutable hash.',
+      500
+    );
+  }
+};
+

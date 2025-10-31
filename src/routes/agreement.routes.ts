@@ -6,6 +6,8 @@ import {
   signAgreementValidation,
   downloadPdfController,
   agreementIdParamValidation,
+  storeHashController,
+  storeHashValidation,
 } from '../controllers/agreement.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -45,6 +47,17 @@ router.get(
   agreementIdParamValidation,
   // NOTE: Access control is handled in the service (Signer/Member/Admin)
   downloadPdfController
+);
+
+// --- Immutability Endpoints (Task 28) ---
+
+// POST /agreements/:agreementId/hash - Store immutable hash / anchor request (System/Admin only)
+router.post(
+  '/:agreementId/hash',
+  authenticate,
+  authorize([PERMISSIONS.ADMIN_DASHBOARD]), // Highest security: Admin/System access only
+  storeHashValidation,
+  storeHashController
 );
 
 export default router;

@@ -3,13 +3,62 @@ import { ProjectModel, IProject } from '../models/project.model';
 import { AssetService } from './asset.service';
 import { IAuthUser } from '../middleware/auth.middleware';
 import { Types } from 'mongoose';
+import * as crypto from 'crypto';
 
 const assetService = new AssetService();
+
+// --- Utility: Canonicalization ---
+
+/**
+ * Deterministically stringifies an object by sorting keys for stable hashing.
+ */
+function canonicalizeJson(obj: any): string {
+  if (typeof obj !== 'object' || obj === null) {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(canonicalizeJson).join(',') + ']';
+  }
+  // Sort keys and recurse
+  const keys = Object.keys(obj).sort();
+  const parts = keys.map(key => `${JSON.stringify(key)}:${canonicalizeJson(obj[key])}`);
+  return '{' + parts.join(',') + '}';
+}
+
+/**
+ * Computes the immutable SHA256 hash of the core agreement data.
+ * @param agreement - Agreement document to hash
+ * @returns SHA256 hash prefixed with 'sha256:'
+ */
+export function computeCanonicalHash(agreement: IAgreement): string {
+  // 1. Combine core components for hashing
+  const hashableObject = {
+    payload: agreement.payloadJson,
+    signers: agreement.signers.map(s => ({
+      // Only include immutable signature-related metadata
+      email: s.email,
+      signedAt: s.signedAt ? s.signedAt.toISOString() : null,
+      signatureMethod: s.signatureMethod,
+    })),
+    // Add agreement metadata that anchors the version
+    agreementId: agreement.agreementId,
+    version: agreement.version,
+  };
+
+  // 2. Canonicalize and Hash
+  const canonicalString = canonicalizeJson(hashableObject);
+  return `sha256:${crypto.createHash('sha256').update(canonicalString).digest('hex')}`;
+}
 
 // Mock Job/Event Emitter
 class MockJobQueue {
   public enqueuePdfJob(agreementId: string): void {
     console.warn(`[Job Enqueued] Final PDF generation for Agreement ${agreementId}.`);
+  }
+
+  public enqueueAnchorJob(agreementId: string, hash: string): string {
+    console.warn(`[Job Enqueued] Blockchain anchoring for Agreement ${agreementId}. Hash: ${hash}`);
+    return `job_${crypto.randomBytes(4).toString('hex')}`;
   }
 }
 const jobQueue = new MockJobQueue();
@@ -305,6 +354,58 @@ export class AgreementService {
       downloadUrlExpiresAt: assetDetails.downloadUrlExpiresAt || null,
       filename: `Agreement-${agreement.agreementId}.pdf`,
     };
+  }
+
+  /**
+   * Computes, stores the immutable hash, and triggers optional chain anchoring.
+   * @param agreementId - Agreement ID (short string)
+   * @param requesterId - User ID (admin/system)
+   * @param anchorChain - Whether to trigger blockchain anchoring
+   * @returns Hash storage result
+   * @throws {Error} - 'AgreementNotFound', 'NotFullySigned', 'AlreadyHashed'
+   */
+  public async storeImmutableHash(
+    agreementId: string,
+    _requesterId: string, // Reserved for future audit trail
+    anchorChain: boolean
+  ): Promise<{
+    status: string;
+    immutableHash: string;
+    jobId?: string;
+    message: string;
+  }> {
+    const agreement = await AgreementModel.findOne({ agreementId });
+    if (!agreement) {
+      throw new Error('AgreementNotFound');
+    }
+
+    if (agreement.status !== 'signed') {
+      throw new Error('NotFullySigned');
+    }
+    if (agreement.immutableHash) {
+      throw new Error('AlreadyHashed'); // Idempotency check
+    }
+
+    // 1. Compute Hash
+    const immutableHash = computeCanonicalHash(agreement.toObject() as IAgreement);
+
+    // 2. Persist Hash
+    agreement.immutableHash = immutableHash;
+    await agreement.save();
+
+    let jobId: string | undefined;
+    let message = 'Hash computed and stored.';
+
+    // 3. Trigger Anchoring Job (Task 57)
+    if (anchorChain) {
+      jobId = jobQueue.enqueueAnchorJob(agreementId, immutableHash);
+      message = 'Hash stored and blockchain anchoring job queued.';
+    }
+
+    // PRODUCTION: Emit 'agreement.hashed' event
+    eventEmitter.emit('agreement.hashed', { agreementId, immutableHash, jobId });
+
+    return { status: 'hashed', immutableHash, jobId, message };
   }
 }
 
