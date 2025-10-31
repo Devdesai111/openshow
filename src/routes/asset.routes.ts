@@ -4,10 +4,13 @@ import {
   registerAssetController,
   addNewVersionController,
   getAssetController,
+  updateAssetMetadataController,
+  deleteAssetController,
   signedUploadValidation,
   registerAssetValidation,
   versionSubmissionValidation,
   assetIdParamValidation,
+  updateAssetMetadataValidation,
 } from '../controllers/asset.controller';
 import { authenticate } from '../middleware/auth.middleware';
 
@@ -48,7 +51,24 @@ router.post(
   addNewVersionController
 );
 
-// NOTE: Future endpoints (DELETE /assets/:id, etc.) will be added here.
+// --- Asset Management Endpoints (Task 22) ---
+
+// PUT /assets/:assetId - Update asset metadata (Task 22)
+router.put(
+  '/:assetId',
+  authenticate,
+  assetIdParamValidation,
+  updateAssetMetadataValidation,
+  updateAssetMetadataController
+);
+
+// DELETE /assets/:assetId - Soft-delete asset (Task 22)
+router.delete(
+  '/:assetId',
+  authenticate,
+  assetIdParamValidation,
+  deleteAssetController
+);
 
 export default router;
 

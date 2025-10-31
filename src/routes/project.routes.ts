@@ -23,6 +23,7 @@ import {
   updateProjectValidation,
   listProjectsValidation,
 } from '../controllers/project.controller';
+import { listProjectAssetsController, listProjectAssetsValidation } from '../controllers/asset.controller';
 import { authenticate, optionalAuthenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../config/permissions';
@@ -134,6 +135,14 @@ router.post(
   completeMilestoneController
 );
 
-// ... (Future Task 15 endpoints go here) ...
+// --- Project Scoped Asset Listing (Task 22) ---
+
+// GET /projects/:projectId/assets - List project assets (Member only)
+router.get(
+  '/:projectId/assets',
+  authenticate,
+  listProjectAssetsValidation,
+  listProjectAssetsController
+);
 
 export default router;

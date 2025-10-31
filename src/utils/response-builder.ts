@@ -90,4 +90,11 @@ export class ResponseBuilder {
   static validationError(res: Response, details: ErrorDetail[]): void {
     this.error(res, ErrorCode.VALIDATION_ERROR, 'Input validation failed', 422, details);
   }
+
+  /**
+   * 204 No Content shortcut
+   */
+  static noContent(res: Response): void {
+    res.status(204).send();
+  }
 }

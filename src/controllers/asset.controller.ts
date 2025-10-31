@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { body, param, validationResult } from 'express-validator';
+import { body, param, query, validationResult } from 'express-validator';
 import { AssetService } from '../services/asset.service';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -221,6 +221,14 @@ export const getAssetController = async (req: Request, res: Response): Promise<v
         404
       );
     }
+    if (errorMessage === 'AssetDeleted') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.NOT_FOUND,
+        'Asset has been deleted.',
+        404
+      );
+    }
     if (errorMessage === 'NoVersionData') {
       return ResponseBuilder.error(
         res,
@@ -234,6 +242,169 @@ export const getAssetController = async (req: Request, res: Response): Promise<v
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error fetching asset details.',
+      500
+    );
+  }
+};
+
+export const updateAssetMetadataValidation = [
+  body('filename').optional().isString().isLength({ min: 1, max: 1024 }).withMessage('Filename max 1024 chars.'),
+  body('isSensitive').optional().isBoolean().withMessage('IsSensitive must be a boolean.'),
+  body('tags').optional().isArray().withMessage('Tags must be an array.'),
+];
+
+export const listProjectAssetsValidation = [
+  param('projectId').isMongoId().withMessage('Invalid Project ID format.').bail(),
+  query('page').optional().isInt({ min: 1 }).toInt().withMessage('Page must be a positive integer.'),
+  query('per_page').optional().isInt({ min: 1, max: 100 }).toInt().withMessage('Per_page must be between 1 and 100.'),
+  query('mimeType').optional().isString().withMessage('MimeType must be a string.'),
+];
+
+/** Updates asset metadata. PUT /assets/:assetId */
+export const updateAssetMetadataController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { assetId } = req.params as { assetId: string };
+    const updatedAsset = await assetService.updateAssetMetadata(assetId, requesterId, requesterRole, req.body);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        assetId: updatedAsset._id!.toString(),
+        filename: updatedAsset.filename,
+        isSensitive: updatedAsset.isSensitive,
+        updatedAt: updatedAsset.updatedAt!.toISOString(),
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'Only the uploader or admin can modify asset metadata.',
+        403
+      );
+    }
+    if (errorMessage === 'AssetNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Asset not found.', 404);
+    }
+    if (errorMessage === 'AssetDeleted') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Asset has been deleted.', 404);
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error updating metadata.',
+      500
+    );
+  }
+};
+
+/** Soft-deletes an asset. DELETE /assets/:assetId */
+export const deleteAssetController = async (req: Request, res: Response): Promise<void> => {
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { assetId } = req.params as { assetId: string };
+    await assetService.deleteAsset(assetId, requesterId, requesterRole);
+
+    return ResponseBuilder.noContent(res);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'Only the uploader or admin can delete this asset.',
+        403
+      );
+    }
+    if (errorMessage === 'AssetNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Asset not found.', 404);
+    }
+    if (errorMessage === 'AssetDeleted') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Asset has already been deleted.', 404);
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error deleting asset.',
+      500
+    );
+  }
+};
+
+/** Lists paginated assets for a project. GET /projects/:projectId/assets */
+export const listProjectAssetsController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId } = req.params as { projectId: string };
+    const result = await assetService.listProjectAssets(projectId, requesterId, requesterRole, req.query);
+
+    return ResponseBuilder.success(res, result, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'You must be a project member to list assets.',
+        403
+      );
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Project not found.', 404);
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error listing project assets.',
       500
     );
   }

@@ -20,6 +20,8 @@ export interface IAsset {
   processed: boolean; // Flag for thumbnail/transcode completion
   thumbnailAssetId?: Types.ObjectId; // Reference to a derived asset (thumbnail)
   versions: IAssetVersion[]; // All versions of this asset
+  isDeleted: boolean; // Soft Delete Flag
+  deletedAt?: Date; // Timestamp of deletion
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -46,6 +48,8 @@ const AssetSchema = new Schema<IAsset>(
     processed: { type: Boolean, default: false },
     thumbnailAssetId: { type: Schema.Types.ObjectId, ref: 'Asset' },
     versions: { type: [AssetVersionSchema], default: [], required: true },
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date },
   },
   { timestamps: true }
 );

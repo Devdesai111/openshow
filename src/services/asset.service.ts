@@ -175,6 +175,9 @@ export class AssetService {
     if (!asset) {
       throw new Error('AssetNotFound');
     }
+    if (asset.isDeleted) {
+      throw new Error('AssetDeleted');
+    }
 
     const isUploader = asset.uploaderId.toString() === requesterId;
     const isAdmin = requesterRole === 'admin';
@@ -340,6 +343,196 @@ export class AssetService {
       downloadUrl,
       downloadUrlExpiresAt: expiresAt,
       createdAt: asset.createdAt!.toISOString(),
+    };
+  }
+
+  /**
+   * Checks permission for mutation (Uploader or Admin).
+   * @throws {Error} 'PermissionDenied' | 'AssetNotFound' | 'AssetDeleted'
+   */
+  private async checkAssetMutationAccess(
+    assetId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role']
+  ): Promise<IAsset> {
+    const asset = (await AssetModel.findById(new Types.ObjectId(assetId)).lean()) as IAsset | null;
+    if (!asset) {
+      throw new Error('AssetNotFound');
+    }
+    if (asset.isDeleted) {
+      throw new Error('AssetDeleted');
+    }
+
+    const isUploader = asset.uploaderId.toString() === requesterId;
+    const isAdmin = requesterRole === 'admin';
+
+    if (!isUploader && !isAdmin) {
+      throw new Error('PermissionDenied');
+    }
+
+    return asset;
+  }
+
+  /**
+   * Updates asset metadata.
+   * @param assetId - Asset ID to update
+   * @param requesterId - User ID updating (must be uploader or admin)
+   * @param requesterRole - User role for admin check
+   * @param updateData - Fields to update (filename, tags, isSensitive)
+   * @returns Updated asset
+   * @throws {Error} 'AssetNotFound', 'PermissionDenied', 'AssetDeleted', 'UpdateFailed'
+   */
+  public async updateAssetMetadata(
+    assetId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role'],
+    updateData: {
+      filename?: string;
+      tags?: string[];
+      isSensitive?: boolean;
+    }
+  ): Promise<IAsset> {
+    const asset = await this.checkAssetMutationAccess(assetId, requesterId, requesterRole);
+
+    // 1. Filter updateable fields
+    const update: Record<string, any> = {};
+    if (updateData.filename !== undefined) update.filename = updateData.filename;
+    if (updateData.tags !== undefined) update.tags = updateData.tags;
+    if (updateData.isSensitive !== undefined) update.isSensitive = updateData.isSensitive;
+
+    // 2. Execute update
+    const updatedAsset = await AssetModel.findOneAndUpdate(
+      { _id: asset._id },
+      { $set: update },
+      { new: true }
+    );
+
+    if (!updatedAsset) {
+      throw new Error('UpdateFailed');
+    }
+
+    // PRODUCTION: Emit 'asset.metadata.updated' event
+    console.warn(`[Event] Asset ${assetId} metadata updated.`);
+
+    return updatedAsset.toObject() as IAsset;
+  }
+
+  /**
+   * Soft-deletes an asset.
+   * @param assetId - Asset ID to delete
+   * @param requesterId - User ID deleting (must be uploader or admin)
+   * @param requesterRole - User role for admin check
+   * @throws {Error} 'AssetNotFound', 'PermissionDenied', 'AssetDeleted', 'DeleteFailed'
+   */
+  public async deleteAsset(
+    assetId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role']
+  ): Promise<void> {
+    const asset = await this.checkAssetMutationAccess(assetId, requesterId, requesterRole);
+
+    // 1. Execute soft delete
+    const result = await AssetModel.updateOne(
+      { _id: asset._id, isDeleted: false }, // Ensure it's not already deleted
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
+
+    if (result.modifiedCount === 0) {
+      throw new Error('DeleteFailed');
+    }
+
+    // PRODUCTION: Emit 'asset.deleted' event (important for cleanup/audit)
+    console.warn(`[Event] Asset ${assetId} soft-deleted.`);
+  }
+
+  /**
+   * Lists paginated assets for a specific project.
+   * @param projectId - Project ID to list assets for
+   * @param requesterId - User ID requesting (must be member or admin)
+   * @param requesterRole - User role for admin check
+   * @param queryParams - Query parameters for filtering and pagination
+   * @returns Paginated list of assets
+   * @throws {Error} 'PermissionDenied'
+   */
+  public async listProjectAssets(
+    projectId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role'],
+    queryParams: {
+      page?: string | number;
+      per_page?: string | number;
+      mimeType?: string;
+    }
+  ): Promise<{
+    data: Array<{
+      assetId: string;
+      filename: string;
+      mimeType: string;
+      uploaderId: string;
+      createdAt: string;
+    }>;
+    meta: {
+      page: number;
+      per_page: number;
+      total: number;
+      total_pages: number;
+    };
+  }> {
+    // 1. Security Check: Must be a project member or Admin
+    const project = (await ProjectModel.findById(new Types.ObjectId(projectId))
+      .select('teamMemberIds')
+      .lean()) as IProject | null;
+
+    if (!project) {
+      throw new Error('ProjectNotFound');
+    }
+
+    const isMember = project.teamMemberIds.some(id => id.toString() === requesterId);
+    if (!isMember && requesterRole !== 'admin') {
+      throw new Error('PermissionDenied');
+    }
+
+    const limit = Math.min(Number(queryParams.per_page) || 20, 100);
+    const pageNum = Number(queryParams.page) || 1;
+    const skip = (pageNum - 1) * limit;
+
+    const filters: Record<string, any> = {
+      projectId: new Types.ObjectId(projectId),
+      isDeleted: false, // Exclude soft-deleted assets
+    };
+    if (queryParams.mimeType) {
+      filters.mimeType = queryParams.mimeType;
+    }
+
+    const [totalResults, assets] = await Promise.all([
+      AssetModel.countDocuments(filters),
+      AssetModel.find(filters)
+        .select('-versions -isSensitive') // Exclude heavy/sensitive fields for list view
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    // Map to DTO (minimal list data)
+    const data = (assets as IAsset[]).map(asset => ({
+      assetId: asset._id!.toString(),
+      filename: asset.filename,
+      mimeType: asset.mimeType,
+      uploaderId: asset.uploaderId.toString(),
+      createdAt: asset.createdAt!.toISOString(),
+    }));
+
+    const totalPages = Math.ceil(totalResults / limit) || 1;
+
+    return {
+      data,
+      meta: {
+        page: pageNum,
+        per_page: limit,
+        total: totalResults,
+        total_pages: totalPages,
+      },
     };
   }
 }
