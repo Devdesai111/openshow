@@ -1,4 +1,5 @@
 import { IUser } from '../models/user.model';
+import { ICreatorProfile } from '../models/creatorProfile.model';
 
 /**
  * Base public user profile (visible to all authenticated users).
@@ -128,20 +129,8 @@ export class UserDTOMapper {
 
   /**
    * Maps User + CreatorProfile to creator-specific DTO.
-   * Note: CreatorProfile model will be implemented in Task 8.
    */
-  static toCreatorDTO(
-    user: IUser,
-    profile: {
-      headline?: string;
-      bio?: string;
-      verified?: boolean;
-      skills?: string[];
-      languages?: string[];
-      rating?: { average: number; count: number };
-      hourlyRate?: { amount: number; currency?: string };
-    } | null
-  ): CreatorProfileDTO {
+  static toCreatorDTO(user: IUser, profile: ICreatorProfile | null): CreatorProfileDTO {
     return {
       ...this.toPublicDTO(user),
       headline: profile?.headline,
@@ -157,9 +146,9 @@ export class UserDTOMapper {
         : undefined,
       hourlyRate: profile?.hourlyRate
         ? {
-            amount: profile.hourlyRate.amount,
-            currency: profile.hourlyRate.currency || 'USD',
-            display: formatMoney(profile.hourlyRate.amount, profile.hourlyRate.currency || 'USD'),
+            amount: profile.hourlyRate,
+            currency: 'USD', // Will be enhanced in future tasks
+            display: formatMoney(profile.hourlyRate, 'USD'),
           }
         : undefined,
     };

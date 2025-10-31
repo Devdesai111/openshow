@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import { connectDatabase } from './config/database';
 import { env } from './config/env';
 import authRoutes from './routes/auth.routes';
-import userRoutes from './routes/user.routes';
+import userProfileRoutes from './routes/userProfile.routes';
 import utilityRoutes from './routes/utility.routes';
 
 const app: Application = express();
@@ -17,7 +17,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use('/auth', authRoutes);
-app.use('/users', userRoutes);
+app.use('/users', userProfileRoutes);
 app.use('/', utilityRoutes); // Health and metrics at root level
 
 // Start server
