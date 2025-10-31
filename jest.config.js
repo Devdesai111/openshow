@@ -23,4 +23,6 @@ module.exports = {
   },
   coverageDirectory: 'coverage',
   verbose: true,
+  // Run integration tests sequentially to avoid database conflicts
+  maxWorkers: 1,
 };

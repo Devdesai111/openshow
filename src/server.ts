@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import { connectDatabase } from './config/database';
 import { env } from './config/env';
 import authRoutes from './routes/auth.routes';
+import userRoutes from './routes/user.routes';
 
 const app: Application = express();
 
@@ -20,6 +21,7 @@ app.get('/health', (_req, res) => {
 
 // Routes
 app.use('/auth', authRoutes);
+app.use('/users', userRoutes);
 
 // Start server
 async function startServer(): Promise<void> {
