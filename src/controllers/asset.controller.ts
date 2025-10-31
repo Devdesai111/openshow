@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { body, validationResult } from 'express-validator';
+import { body, param, validationResult } from 'express-validator';
 import { AssetService } from '../services/asset.service';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -20,6 +20,16 @@ export const registerAssetValidation = [
   body('storageKey').isString().withMessage('Storage key is required for registration.'),
   body('size').isInt({ min: 1 }).toInt().withMessage('File size is required and must be > 0.'),
   body('sha256').optional().isString().withMessage('SHA256 hash must be a string.'),
+];
+
+export const versionSubmissionValidation = [
+  body('storageKey').isString().withMessage('Storage key is required for registration.'),
+  body('size').isInt({ min: 1 }).toInt().withMessage('File size is required and must be > 0.'),
+  body('sha256').isString().withMessage('SHA256 hash is required for integrity check.'),
+];
+
+export const assetIdParamValidation = [
+  param('assetId').isMongoId().withMessage('Invalid Asset ID format.').bail(),
 ];
 
 /** Handles request for a pre-signed PUT URL. POST /assets/signed-upload-url */
@@ -101,6 +111,129 @@ export const registerAssetController = async (req: Request, res: Response): Prom
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error during asset registration.',
+      500
+    );
+  }
+};
+
+/** Appends a new version to an existing asset. POST /assets/:assetId/version */
+export const addNewVersionController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const uploaderId = req.user?.sub;
+  const uploaderRole = req.user?.role;
+  if (!uploaderId || !uploaderRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { assetId } = req.params as { assetId: string };
+    const result = await assetService.addNewVersion(assetId, uploaderId, uploaderRole, req.body);
+    return ResponseBuilder.success(res, result, 201);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'You can only add versions to assets you uploaded.',
+        403
+      );
+    }
+    if (errorMessage === 'AssetNotFound') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.NOT_FOUND,
+        'Asset not found.',
+        404
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error adding new version.',
+      500
+    );
+  }
+};
+
+/** Retrieves asset metadata and a signed download URL. GET /assets/:assetId */
+export const getAssetController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { assetId } = req.params as { assetId: string };
+    // Determine if presign is requested (default true)
+    const presign = req.query.presign !== 'false';
+
+    const assetDetails = await assetService.getAssetAndSignedDownloadUrl(
+      assetId,
+      requesterId,
+      requesterRole,
+      presign
+    );
+
+    return ResponseBuilder.success(res, assetDetails, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'You do not have permission to view or download this asset.',
+        403
+      );
+    }
+    if (errorMessage === 'AssetNotFound') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.NOT_FOUND,
+        'Asset not found.',
+        404
+      );
+    }
+    if (errorMessage === 'NoVersionData') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.NOT_FOUND,
+        'Asset has no version data.',
+        404
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error fetching asset details.',
       500
     );
   }

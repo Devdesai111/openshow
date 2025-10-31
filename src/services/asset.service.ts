@@ -1,16 +1,24 @@
-import { AssetModel, IAssetVersion } from '../models/asset.model';
+import { AssetModel, IAsset, IAssetVersion } from '../models/asset.model';
 import { AssetUploadSessionModel } from '../models/assetUploadSession.model';
+import { ProjectModel, IProject } from '../models/project.model';
+import { IAuthUser } from '../middleware/auth.middleware';
 import { Types } from 'mongoose';
 import * as crypto from 'crypto';
 
 // --- Mocks/Constants ---
-const SIGNED_URL_TTL_S = 900; // 15 minutes
+const SIGNED_URL_TTL_S = 900; // 15 minutes (upload)
+const DOWNLOAD_URL_TTL_S = 300; // 5 minutes (download)
 const SIGNED_URL_MOCK = 'https://s3.amazonaws.com/mock-bucket/temp/';
 
 // Mock AWS SDK/Cloud Client for Pre-signing
 class CloudStorageService {
   public getPutSignedUrl(key: string, _mimeType: string, ttl: number): string {
     // PRODUCTION: Use AWS.S3.getSignedUrl() or equivalent
+    return `${SIGNED_URL_MOCK}${key}?X-Amz-Signature=mock_signature&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=${ttl}`;
+  }
+
+  public getGetSignedUrl(key: string, _mimeType: string, ttl: number): string {
+    // PRODUCTION: Use AWS.S3.getSignedUrl() for GET operations
     return `${SIGNED_URL_MOCK}${key}?X-Amz-Signature=mock_signature&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=${ttl}`;
   }
 
@@ -150,6 +158,188 @@ export class AssetService {
       versionNumber: 1,
       processed: false,
       createdAt: savedAsset.createdAt!.toISOString(),
+    };
+  }
+
+  /**
+   * Checks permission for viewing and downloading an asset.
+   * @returns The Asset document.
+   * @throws {Error} 'AssetNotFound', 'PermissionDenied'.
+   */
+  private async checkAssetAccess(
+    assetId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role']
+  ): Promise<IAsset> {
+    const asset = await AssetModel.findById(new Types.ObjectId(assetId)).lean() as IAsset | null;
+    if (!asset) {
+      throw new Error('AssetNotFound');
+    }
+
+    const isUploader = asset.uploaderId.toString() === requesterId;
+    const isAdmin = requesterRole === 'admin';
+    let isMember = false;
+
+    // Check project membership if asset is linked to a project
+    if (asset.projectId) {
+      const project = (await ProjectModel.findById(asset.projectId)
+        .select('teamMemberIds visibility')
+        .lean()) as IProject | null;
+      
+      if (project) {
+        isMember = project.teamMemberIds.some(id => id.toString() === requesterId);
+
+        // For private projects, only members, uploader, or admin can access
+        if (project.visibility === 'private' && !isMember && !isUploader && !isAdmin) {
+          throw new Error('PermissionDenied');
+        }
+        // For public projects, anyone can access (fall through to final check)
+      }
+    }
+
+    // Final check: if not uploader, not member (of project), and not admin, then access denied
+    // This handles profile assets (no projectId) and public projects
+    if (!isUploader && !isMember && !isAdmin) {
+      // NOTE: In a full implementation, public access rules (e.g. public portfolio) would be checked here
+      throw new Error('PermissionDenied');
+    }
+
+    return asset;
+  }
+
+  /**
+   * Appends a new version entry to an existing asset.
+   * @param assetId - Asset ID to add version to
+   * @param uploaderId - User ID adding the version (must be uploader or admin)
+   * @param data - Version data
+   * @returns New version response
+   * @throws {Error} - 'AssetNotFound', 'PermissionDenied', 'UpdateFailed'
+   */
+  public async addNewVersion(
+    assetId: string,
+    uploaderId: string,
+    uploaderRole: IAuthUser['role'],
+    data: {
+      storageKey: string;
+      size: number;
+      sha256: string;
+    }
+  ): Promise<{
+    assetId: string;
+    versionNumber: number;
+    createdAt: string;
+  }> {
+    const { storageKey, size, sha256 } = data;
+    const assetObjectId = new Types.ObjectId(assetId);
+
+    // 1. Check uploader ownership (or Admin)
+    const asset = await AssetModel.findById(assetObjectId);
+    if (!asset) {
+      throw new Error('AssetNotFound');
+    }
+    if (asset.uploaderId.toString() !== uploaderId && uploaderRole !== 'admin') {
+      throw new Error('PermissionDenied');
+    }
+
+    // 2. Build new version sub-document
+    const newVersion: IAssetVersion = {
+      versionNumber: asset.versions.length + 1, // Increment version
+      storageKey,
+      size,
+      sha256,
+      uploaderId: new Types.ObjectId(uploaderId),
+      createdAt: new Date(),
+    };
+
+    // 3. Execute atomic push operation
+    const updatedAsset = await AssetModel.findOneAndUpdate(
+      { _id: assetObjectId },
+      {
+        $push: { versions: newVersion },
+        $set: { processed: false }, // Reset processing flag for new version
+      },
+      { new: true }
+    );
+
+    if (!updatedAsset) {
+      throw new Error('UpdateFailed');
+    }
+
+    // 4. Trigger thumbnail job for the new version
+    jobQueue.enqueueThumbnailJob(updatedAsset._id!.toString());
+
+    // PRODUCTION: Emit 'asset.version.added' event
+    console.warn(`[Event] Asset ${assetId} new version ${newVersion.versionNumber} registered.`);
+
+    return {
+      assetId: updatedAsset._id!.toString(),
+      versionNumber: newVersion.versionNumber,
+      createdAt: newVersion.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Retrieves asset metadata and a secure download URL if authorized.
+   * @param assetId - Asset ID to retrieve
+   * @param requesterId - User ID requesting the asset
+   * @param requesterRole - User role for permission check
+   * @param presign - Whether to generate a signed download URL
+   * @returns Asset metadata with optional download URL
+   * @throws {Error} - 'AssetNotFound', 'PermissionDenied', 'NoVersionData'
+   */
+  public async getAssetAndSignedDownloadUrl(
+    assetId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role'],
+    presign: boolean = true
+  ): Promise<{
+    assetId: string;
+    filename: string;
+    mimeType: string;
+    uploaderId: string;
+    size: number;
+    sha256: string;
+    processed: boolean;
+    versionsCount: number;
+    downloadUrl?: string | null;
+    downloadUrlExpiresAt?: string | null;
+    createdAt: string;
+  }> {
+    // 1. Check Access (throws 404/403 if unauthorized)
+    const asset = await this.checkAssetAccess(assetId, requesterId, requesterRole);
+
+    // 2. Get the latest version's metadata
+    const latestVersion = asset.versions[asset.versions.length - 1];
+    if (!latestVersion) {
+      throw new Error('NoVersionData');
+    }
+
+    let downloadUrl: string | null = null;
+    let expiresAt: string | null = null;
+
+    // 3. Generate Signed URL if requested
+    if (presign) {
+      downloadUrl = cloudStorageService.getGetSignedUrl(
+        latestVersion.storageKey,
+        asset.mimeType,
+        DOWNLOAD_URL_TTL_S
+      );
+      expiresAt = new Date(Date.now() + DOWNLOAD_URL_TTL_S * 1000).toISOString();
+    }
+
+    // 4. Map to Download DTO (consistent with Task 19 outputs)
+    return {
+      assetId: asset._id!.toString(),
+      filename: asset.filename,
+      mimeType: asset.mimeType,
+      uploaderId: asset.uploaderId.toString(),
+      size: latestVersion.size,
+      sha256: latestVersion.sha256,
+      processed: asset.processed,
+      versionsCount: asset.versions.length,
+      downloadUrl,
+      downloadUrlExpiresAt: expiresAt,
+      createdAt: asset.createdAt!.toISOString(),
     };
   }
 }
