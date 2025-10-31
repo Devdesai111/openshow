@@ -1,4 +1,4 @@
-import { IProject, IProjectRole } from '../models/project.model';
+import { IProject, IProjectRole, IMilestone } from '../models/project.model';
 import { UserModel } from '../models/user.model';
 
 /**
@@ -26,6 +26,139 @@ export interface ProjectRoleDTO {
   filled: number;
   assignedUserIds: string[]; // Hidden for non-members
   requiredSkills?: string[];
+}
+
+/**
+ * Milestone status types for state machine
+ */
+export type MilestoneStatus = 
+  | 'pending' 
+  | 'funded' 
+  | 'completed' 
+  | 'approved' 
+  | 'disputed' 
+  | 'rejected';
+
+/**
+ * Available actions for milestone state machine
+ */
+export type MilestoneAction = 
+  | 'edit' 
+  | 'delete' 
+  | 'fund' 
+  | 'complete' 
+  | 'approve' 
+  | 'dispute' 
+  | 'resolve';
+
+/**
+ * Milestone DTO with state machine per Task-105
+ */
+export interface MilestoneDTO {
+  milestoneId: string;
+  title: string;
+  description?: string;
+  dueDate?: string;
+  status: MilestoneStatus;
+  amount?: number;
+  currency?: string;
+  availableActions: MilestoneAction[]; // ✅ Explicit state machine!
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Maps milestones with state machine logic per Task-105 standards
+ */
+export class MilestoneMapper {
+  /**
+   * Maps IMilestone to DTO with state machine logic
+   * @param milestone - Database milestone
+   * @param userRole - User's role (admin, owner, creator)
+   * @param isProjectMember - Whether user is project member
+   * @param isProjectOwner - Whether user is project owner
+   * @returns MilestoneDTO with availableActions
+   */
+  static toDTO(
+    milestone: IMilestone,
+    userRole: string,
+    isProjectMember: boolean,
+    isProjectOwner: boolean
+  ): MilestoneDTO {
+    return {
+      milestoneId: milestone._id!.toString(),
+      title: milestone.title,
+      description: milestone.description,
+      dueDate: milestone.dueDate?.toISOString(),
+      status: milestone.status as MilestoneStatus,
+      amount: milestone.amount,
+      currency: milestone.currency,
+      availableActions: this.getAvailableActions(
+        milestone.status as MilestoneStatus,
+        userRole,
+        isProjectMember,
+        isProjectOwner
+      ),
+      createdAt: milestone.createdAt?.toISOString() || new Date().toISOString(),
+      updatedAt: milestone.updatedAt?.toISOString() || new Date().toISOString(),
+    };
+  }
+
+  /**
+   * State machine logic - defines valid transitions per Task-105
+   */
+  private static getAvailableActions(
+    status: MilestoneStatus,
+    userRole: string,
+    isProjectMember: boolean,
+    isProjectOwner: boolean
+  ): MilestoneAction[] {
+    const actions: MilestoneAction[] = [];
+
+    switch (status) {
+      case 'pending':
+        if (isProjectOwner || userRole === 'admin') {
+          actions.push('edit', 'delete', 'fund');
+        }
+        if (isProjectMember) {
+          actions.push('complete');
+        }
+        break;
+
+      case 'funded':
+        if (isProjectMember) {
+          actions.push('complete');
+        }
+        if (isProjectOwner || userRole === 'admin') {
+          actions.push('edit'); // Limited edit (no amount/currency)
+        }
+        break;
+
+      case 'completed':
+        if (isProjectOwner || userRole === 'admin') {
+          actions.push('approve', 'dispute');
+        }
+        break;
+
+      case 'disputed':
+        if (userRole === 'admin') {
+          actions.push('resolve'); // Admin mediation
+        }
+        break;
+
+      case 'approved':
+        // Final state - no further actions
+        break;
+
+      case 'rejected':
+        if (userRole === 'admin') {
+          actions.push('resolve');
+        }
+        break;
+    }
+
+    return actions;
+  }
 }
 
 /**

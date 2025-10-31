@@ -8,6 +8,14 @@ import {
   applyValidation,
   assignRoleController,
   assignValidation,
+  addMilestoneController,
+  addMilestoneValidation,
+  updateMilestoneController,
+  updateMilestoneValidation,
+  deleteMilestoneController,
+  completeMilestoneController,
+  completeMilestoneValidation,
+  milestoneParamValidation,
 } from '../controllers/project.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -55,6 +63,44 @@ router.post(
   assignRoleController
 );
 
-// ... (Future Task 14, 15 endpoints go here) ...
+// --- Milestone Management Endpoints (Task 14) ---
+
+// POST /projects/:projectId/milestones - Add milestone (Owner only)
+router.post(
+  '/:projectId/milestones',
+  authenticate,
+  authorize([PERMISSIONS.PROJECT_CREATE]), // Owner/admin access
+  addMilestoneValidation,
+  addMilestoneController
+);
+
+// PUT /projects/:projectId/milestones/:milestoneId - Update milestone (Owner only)
+router.put(
+  '/:projectId/milestones/:milestoneId',
+  authenticate,
+  authorize([PERMISSIONS.PROJECT_CREATE]), // Owner/admin access
+  updateMilestoneValidation,
+  updateMilestoneController
+);
+
+// DELETE /projects/:projectId/milestones/:milestoneId - Delete milestone (Owner only)
+router.delete(
+  '/:projectId/milestones/:milestoneId',
+  authenticate,
+  authorize([PERMISSIONS.PROJECT_CREATE]), // Owner/admin access
+  milestoneParamValidation,
+  deleteMilestoneController
+);
+
+// POST /projects/:projectId/milestones/:milestoneId/complete - Mark milestone complete (Member/Owner)
+router.post(
+  '/:projectId/milestones/:milestoneId/complete',
+  authenticate,
+  // NOTE: No authorize middleware - membership validation handled in service layer
+  completeMilestoneValidation,
+  completeMilestoneController
+);
+
+// ... (Future Task 15 endpoints go here) ...
 
 export default router;

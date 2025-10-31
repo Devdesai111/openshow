@@ -332,3 +332,253 @@ export const assignRoleController = async (req: Request, res: Response): Promise
     return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error during role assignment.', 500);
   }
 };
+
+// --- Milestone Management Validation ---
+
+export const milestoneParamValidation = [
+  param('projectId').isMongoId().withMessage('Invalid Project ID format.').bail(),
+  param('milestoneId').isMongoId().withMessage('Invalid Milestone ID format.').bail(),
+];
+
+export const addMilestoneValidation = [
+  param('projectId').isMongoId().withMessage('Invalid Project ID format.').bail(),
+  body('title').isString().isLength({ min: 3, max: 200 }).withMessage('Milestone title required (3-200 chars).'),
+  body('description').optional().isString().isLength({ max: 1000 }).withMessage('Description max 1000 chars.'),
+  body('amount').isInt({ min: 0 }).toInt().withMessage('Amount must be a non-negative integer (cents).'),
+  body('currency').optional().isString().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 chars.'),
+  body('dueDate').optional().isISO8601().toDate().withMessage('Due date must be a valid ISO 8601 date.'),
+];
+
+export const updateMilestoneValidation = [
+  ...milestoneParamValidation,
+  body('title').optional().isString().isLength({ min: 3, max: 200 }).withMessage('Title 3-200 chars.'),
+  body('description').optional().isString().isLength({ max: 1000 }).withMessage('Description max 1000 chars.'),
+  body('amount').optional().isInt({ min: 0 }).toInt().withMessage('Amount must be >= 0.'),
+  body('currency').optional().isString().isLength({ min: 3, max: 3 }).withMessage('Currency must be 3 chars.'),
+  body('dueDate').optional().isISO8601().toDate().withMessage('Due date must be valid ISO 8601.'),
+];
+
+export const completeMilestoneValidation = [
+  ...milestoneParamValidation,
+  body('notes').optional().isString().isLength({ max: 2000 }).withMessage('Notes max 2000 chars.'),
+  body('evidenceAssetIds').optional().isArray().withMessage('Evidence asset IDs must be an array.'),
+  body('evidenceAssetIds.*').optional().isMongoId().withMessage('Evidence asset ID must be valid Mongo ID.'),
+];
+
+// --- Milestone Controllers ---
+
+/** Adds a new milestone. POST /projects/:projectId/milestones */
+export const addMilestoneController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId } = req.params;
+    if (!projectId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Project ID is required', 400);
+    }
+
+    const newMilestone = await projectService.addMilestone(projectId, requesterId, req.body, requesterRole);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        milestoneId: newMilestone._id.toString(),
+        title: newMilestone.title,
+        amount: newMilestone.amount,
+        currency: newMilestone.currency,
+        status: newMilestone.status,
+        createdAt: new Date().toISOString(), // newMilestone doesn't have timestamps yet
+        message: 'Milestone created successfully.',
+      },
+      201
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(res, ErrorCode.PERMISSION_DENIED, 'Only the project owner can add milestones.', 403);
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error adding milestone.', 500);
+  }
+};
+
+/** Updates an existing milestone. PUT /projects/:projectId/milestones/:milestoneId */
+export const updateMilestoneController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId, milestoneId } = req.params;
+    if (!projectId || !milestoneId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Project ID and Milestone ID are required', 400);
+    }
+
+    const updatedMilestone = await projectService.updateMilestone(projectId, requesterId, milestoneId, req.body, requesterRole);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        milestoneId: updatedMilestone._id.toString(),
+        title: updatedMilestone.title,
+        description: updatedMilestone.description,
+        amount: updatedMilestone.amount,
+        currency: updatedMilestone.currency,
+        status: updatedMilestone.status,
+        dueDate: updatedMilestone.dueDate?.toISOString(),
+        message: 'Milestone updated successfully.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'MilestoneFundedConflict') {
+      return ResponseBuilder.error(res, ErrorCode.CONFLICT, 'Cannot modify amount/currency of an already funded milestone.', 409);
+    }
+    if (errorMessage === 'MilestoneNotFound') {
+      return ResponseBuilder.notFound(res, 'Milestone');
+    }
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(res, ErrorCode.PERMISSION_DENIED, 'Only the project owner can update milestones.', 403);
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error updating milestone.', 500);
+  }
+};
+
+/** Deletes an existing milestone. DELETE /projects/:projectId/milestones/:milestoneId */
+export const deleteMilestoneController = async (req: Request, res: Response): Promise<void> => {
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId, milestoneId } = req.params;
+    if (!projectId || !milestoneId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Project ID and Milestone ID are required', 400);
+    }
+
+    await projectService.deleteMilestone(projectId, requesterId, milestoneId, requesterRole);
+
+    return ResponseBuilder.success(res, {}, 204);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'MilestoneFundedConflict') {
+      return ResponseBuilder.error(res, ErrorCode.CONFLICT, 'Cannot delete a milestone with associated funds/escrow.', 409);
+    }
+    if (errorMessage === 'MilestoneNotFound') {
+      return ResponseBuilder.notFound(res, 'Milestone');
+    }
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(res, ErrorCode.PERMISSION_DENIED, 'Only the project owner can delete milestones.', 403);
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error deleting milestone.', 500);
+  }
+};
+
+/** Marks a milestone as completed. POST /projects/:projectId/milestones/:milestoneId/complete */
+export const completeMilestoneController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const completerId = req.user?.sub;
+  if (!completerId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId, milestoneId } = req.params;
+    if (!projectId || !milestoneId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Project ID and Milestone ID are required', 400);
+    }
+
+    const { notes, evidenceAssetIds } = req.body;
+
+    const updatedMilestone = await projectService.completeMilestone(projectId, milestoneId, completerId, notes, evidenceAssetIds);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        milestoneId: updatedMilestone._id.toString(),
+        status: updatedMilestone.status,
+        completedBy: completerId,
+        title: updatedMilestone.title,
+        amount: updatedMilestone.amount,
+        currency: updatedMilestone.currency,
+        message: 'Milestone marked as complete, awaiting owner approval.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(res, ErrorCode.PERMISSION_DENIED, 'Only a project member can complete milestones.', 403);
+    }
+    if (errorMessage === 'MilestoneAlreadyProcessed') {
+      return ResponseBuilder.error(res, ErrorCode.CONFLICT, 'Milestone is already completed or approved.', 409);
+    }
+    if (errorMessage === 'MilestoneNotFound') {
+      return ResponseBuilder.notFound(res, 'Milestone');
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error completing milestone.', 500);
+  }
+};

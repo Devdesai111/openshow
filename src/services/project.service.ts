@@ -310,4 +310,228 @@ export class ProjectService {
 
     return updatedProject.toObject() as IProject;
   }
+
+  // --- Milestone CRUD ---
+
+  /**
+   * Finds and returns a specific milestone from the project document.
+   * @param project - Project document
+   * @param milestoneId - Milestone ID to find
+   * @throws {Error} 'MilestoneNotFound'
+   * @returns Milestone subdocument
+   */
+  private getMilestone(project: IProject, milestoneId: string): any {
+    const milestoneObjectId = new Types.ObjectId(milestoneId);
+    const milestone = project.milestones.find(m => m._id?.equals(milestoneObjectId));
+    if (!milestone) {
+      throw new Error('MilestoneNotFound');
+    }
+    return milestone;
+  }
+
+  /**
+   * Checks if user is a project member.
+   * @param project - Project document
+   * @param userId - User ID to check
+   * @returns True if user is a team member
+   */
+  private isProjectMember(project: IProject, userId: string): boolean {
+    return project.teamMemberIds.some(id => id.toString() === userId);
+  }
+
+  /**
+   * Adds a new milestone to a project.
+   * @param projectId - Project ID
+   * @param requesterId - User ID creating milestone (must be owner)
+   * @param data - Milestone data
+   * @throws {Error} - 'ProjectNotFound', 'PermissionDenied'
+   * @returns Created milestone
+   */
+  public async addMilestone(
+    projectId: string,
+    requesterId: string,
+    data: {
+      title: string;
+      description?: string;
+      amount: number;
+      currency?: string;
+      dueDate?: string;
+    },
+    requesterRole?: string
+  ): Promise<any> {
+    const project = await this.checkOwnerAccess(projectId, requesterId, requesterRole);
+
+    // 1. Create sub-document
+    const newMilestone = {
+      _id: new Types.ObjectId(),
+      title: data.title,
+      description: data.description,
+      amount: data.amount,
+      currency: data.currency || 'USD',
+      dueDate: data.dueDate ? new Date(data.dueDate) : undefined,
+      status: 'pending',
+      escrowId: undefined, // Will be set in Task 35
+    };
+
+    // 2. Push to embedded array
+    await ProjectModel.updateOne(
+      { _id: project._id },
+      { $push: { milestones: newMilestone } }
+    );
+
+    // PRODUCTION: Emit 'project.milestone.created' event (Task 16, 17, 11 subscribe)
+    console.warn(`[Event] Project ${projectId} milestone ${newMilestone._id.toString()} created`);
+
+    return newMilestone;
+  }
+
+  /**
+   * Updates an existing milestone.
+   * @param projectId - Project ID
+   * @param requesterId - User ID updating milestone (must be owner)
+   * @param milestoneId - Milestone ID to update
+   * @param data - Updated milestone data
+   * @throws {Error} - 'ProjectNotFound', 'PermissionDenied', 'MilestoneNotFound', 'MilestoneFundedConflict'
+   * @returns Updated milestone
+   */
+  public async updateMilestone(
+    projectId: string,
+    requesterId: string,
+    milestoneId: string,
+    data: {
+      title?: string;
+      description?: string;
+      amount?: number;
+      currency?: string;
+      dueDate?: string;
+    },
+    requesterRole?: string
+  ): Promise<any> {
+    const project = await this.checkOwnerAccess(projectId, requesterId, requesterRole);
+    const milestone = this.getMilestone(project, milestoneId);
+    const milestoneObjectId = new Types.ObjectId(milestoneId);
+
+    // SECURITY CHECK: Prevent financial changes if funds are already locked/released
+    if (milestone.status === 'funded' && (data.amount !== undefined || data.currency !== undefined)) {
+      throw new Error('MilestoneFundedConflict');
+    }
+
+    // 1. Build dynamic update set for sub-document positional update
+    const setUpdate: Record<string, any> = {};
+    if (data.title !== undefined) setUpdate['milestones.$.title'] = data.title;
+    if (data.description !== undefined) setUpdate['milestones.$.description'] = data.description;
+    if (data.amount !== undefined) setUpdate['milestones.$.amount'] = data.amount;
+    if (data.currency !== undefined) setUpdate['milestones.$.currency'] = data.currency;
+    if (data.dueDate !== undefined) setUpdate['milestones.$.dueDate'] = new Date(data.dueDate);
+
+    // 2. Perform Positional Update
+    const updatedProject = await ProjectModel.findOneAndUpdate(
+      { _id: project._id, 'milestones._id': milestoneObjectId },
+      { $set: setUpdate },
+      { new: true }
+    );
+
+    if (!updatedProject) {
+      throw new Error('UpdateFailed');
+    }
+
+    // 3. Return the specific updated milestone
+    return this.getMilestone(updatedProject, milestoneId);
+  }
+
+  /**
+   * Deletes an existing milestone.
+   * @param projectId - Project ID
+   * @param requesterId - User ID deleting milestone (must be owner)
+   * @param milestoneId - Milestone ID to delete
+   * @throws {Error} - 'ProjectNotFound', 'PermissionDenied', 'MilestoneNotFound', 'MilestoneFundedConflict'
+   */
+  public async deleteMilestone(
+    projectId: string,
+    requesterId: string,
+    milestoneId: string,
+    requesterRole?: string
+  ): Promise<void> {
+    const project = await this.checkOwnerAccess(projectId, requesterId, requesterRole);
+    const milestone = this.getMilestone(project, milestoneId);
+    const milestoneObjectId = new Types.ObjectId(milestoneId);
+
+    // SECURITY CHECK: Cannot delete if funds are locked/released (Task 35 integration required)
+    if (milestone.escrowId) {
+      throw new Error('MilestoneFundedConflict');
+    }
+
+    // 1. Perform atomic pull operation
+    const result = await ProjectModel.updateOne(
+      { _id: project._id },
+      { $pull: { milestones: { _id: milestoneObjectId } } }
+    );
+
+    if (result.modifiedCount === 0) {
+      throw new Error('MilestoneNotFound');
+    }
+
+    // PRODUCTION: Emit 'project.milestone.deleted' event
+    console.warn(`[Event] Project ${projectId} milestone ${milestoneId} deleted`);
+  }
+
+  /**
+   * Marks a milestone as completed by a project member/owner.
+   * @param projectId - Project ID
+   * @param milestoneId - Milestone ID to complete
+   * @param completerId - User ID marking as complete
+   * @param notes - Optional completion notes
+   * @param evidenceAssetIds - Optional evidence asset IDs
+   * @throws {Error} - 'ProjectNotFound', 'PermissionDenied', 'MilestoneNotFound', 'MilestoneAlreadyProcessed'
+   * @returns Updated milestone
+   */
+  public async completeMilestone(
+    projectId: string,
+    milestoneId: string,
+    completerId: string,
+    notes?: string,
+    evidenceAssetIds?: string[]
+  ): Promise<any> {
+    const project = await ProjectModel.findById(new Types.ObjectId(projectId)).lean() as IProject;
+    if (!project) {
+      throw new Error('ProjectNotFound');
+    }
+
+    // 1. Check Project Membership
+    if (!this.isProjectMember(project, completerId)) {
+      throw new Error('PermissionDenied');
+    }
+
+    const milestone = this.getMilestone(project, milestoneId);
+    const milestoneObjectId = new Types.ObjectId(milestoneId);
+
+    // 2. State Check: Only transition from 'pending' or 'funded'
+    if (milestone.status === 'completed' || milestone.status === 'approved') {
+      throw new Error('MilestoneAlreadyProcessed');
+    }
+
+    // 3. Perform atomic status update
+    const updatedProject = await ProjectModel.findOneAndUpdate(
+      { _id: project._id, 'milestones._id': milestoneObjectId },
+      {
+        $set: {
+          'milestones.$.status': 'completed',
+          // PRODUCTION: Store completion metadata in separate log/sub-document if needed
+          // For now, we acknowledge the parameters to avoid lint warnings
+          ...(notes && { 'milestones.$.completionNotes': notes }),
+          ...(evidenceAssetIds && { 'milestones.$.evidenceAssetIds': evidenceAssetIds }),
+        }
+      },
+      { new: true }
+    );
+
+    if (!updatedProject) {
+      throw new Error('UpdateFailed');
+    }
+
+    // PRODUCTION: Emit 'project.milestone.completed' event (Task 17, 11 subscribe)
+    console.warn(`[Event] Milestone ${milestoneId} marked completed by ${completerId}`);
+
+    return this.getMilestone(updatedProject, milestoneId);
+  }
 }
