@@ -10,6 +10,7 @@ import notificationRoutes from './routes/notification.routes';
 import projectRoutes from './routes/project.routes';
 import collaborationRoutes from './routes/collaboration.routes';
 import assetRoutes from './routes/asset.routes';
+import agreementRoutes from './routes/agreement.routes';
 import utilityRoutes from './routes/utility.routes';
 
 const app: Application = express();
@@ -27,6 +28,7 @@ app.use('/market', discoveryRoutes); // Marketplace/Discovery routes (Task 10, 1
 app.use('/notifications', notificationRoutes);
 app.use('/projects', projectRoutes);
 app.use('/projects', collaborationRoutes); // Collaboration routes (Task 17)
+app.use('/projects', agreementRoutes); // Agreement routes (Task 21)
 app.use('/assets', assetRoutes); // Asset upload routes (Task 19)
 app.use('/', utilityRoutes); // Health and metrics at root level
 
