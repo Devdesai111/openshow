@@ -13,6 +13,7 @@ import {
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../config/permissions';
+import { searchCreatorsController, searchCreatorsValidation } from '../controllers/discovery.controller';
 
 const router = Router();
 
@@ -50,7 +51,9 @@ router.put('/:creatorId/portfolio/:itemId', authenticate, portfolioItemIdParamVa
 // DELETE /users/:creatorId/portfolio/:itemId - Delete portfolio item (owner only)
 router.delete('/:creatorId/portfolio/:itemId', authenticate, portfolioItemIdParamValidation, deletePortfolioItemController);
 
-// --- NOTE: Creator directory endpoints (Task 10) will be added here ---
+// --- Public Discovery Endpoints (Task 10) ---
+// GET /creators - Public creator directory search/listing
+router.get('/creators', searchCreatorsValidation, searchCreatorsController);
 
 export default router;
 
