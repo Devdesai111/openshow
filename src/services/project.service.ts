@@ -1,7 +1,8 @@
 import { Types } from 'mongoose';
-import { ProjectModel, IProject, IRevenueSplit } from '../models/project.model';
+import { ProjectModel, IProject, IRevenueSplit, IMilestone } from '../models/project.model';
 import { ProjectInviteModel, ProjectApplicationModel, IProjectInvite, IProjectApplication } from '../models/projectApplication.model';
 import { UserModel, IUser } from '../models/user.model';
+import * as crypto from 'crypto';
 
 interface ICreateProjectRequestDTO {
   title: string;
@@ -26,6 +27,21 @@ class MockNotificationService {
 }
 
 const mockNotificationService = new MockNotificationService();
+
+// Mock Payments Service for fund release (Task 35 dependency)
+class MockPaymentService {
+  /** Simulates the request to release funds from escrow. Returns provider job ID. */
+  public async releaseEscrow(escrowId: string, _milestoneId: string, amount: number): Promise<{ releaseJobId: string }> {
+    console.warn(`[Payment Mock] Initiating release for ESCROW ${escrowId}. Amount: ${amount}.`);
+    return { releaseJobId: `release_job_${crypto.randomBytes(4).toString('hex')}` };
+  }
+
+  /** Simulates the request to put escrow on hold during a dispute. */
+  public async holdEscrow(escrowId: string, disputeId: string): Promise<void> {
+    console.warn(`[Payment Mock] Placing HOLD on ESCROW ${escrowId} due to dispute ${disputeId}.`);
+  }
+}
+const paymentService = new MockPaymentService();
 
 // Mock Event Emitter for Publishing Indexing Events (Task 16)
 class MockEventEmitter {
@@ -899,5 +915,127 @@ export class ProjectService {
     });
 
     return { projectId: project._id!.toString(), team };
+  }
+
+  /**
+   * Milestone Approval Logic. Triggers fund release.
+   * @param projectId - Project ID
+   * @param requesterId - User ID approving (must be owner)
+   * @param milestoneId - Milestone ID to approve
+   * @param requesterRole - User role for admin check
+   * @returns Updated milestone
+   * @throws {Error} - 'ProjectNotFound', 'PermissionDenied', 'MilestoneNotFound', 'MilestoneNotCompleted', 'MilestoneNotFunded'
+   */
+  public async approveMilestone(
+    projectId: string,
+    requesterId: string,
+    milestoneId: string,
+    requesterRole?: string
+  ): Promise<IMilestone> {
+    const project = await this.checkOwnerAccess(projectId, requesterId, requesterRole); // Check is owner
+    const milestone = this.getMilestone(project, milestoneId);
+    const milestoneObjectId = new Types.ObjectId(milestoneId);
+
+    // 1. STATE CHECK (Must be 'completed')
+    if (milestone.status !== 'completed') {
+      throw new Error('MilestoneNotCompleted');
+    }
+
+    // 2. FUND RELEASE CHECK (Must be funded to release)
+    if (!milestone.escrowId || !milestone.amount) {
+      throw new Error('MilestoneNotFunded');
+    }
+
+    // 3. EXECUTE RELEASE (Mocked External Call)
+    const { releaseJobId } = await paymentService.releaseEscrow(
+      milestone.escrowId.toString(),
+      milestoneId,
+      milestone.amount
+    );
+
+    // 4. Perform Atomic Status Update
+    const updatedProject = await ProjectModel.findOneAndUpdate(
+      { _id: project._id, 'milestones._id': milestoneObjectId },
+      {
+        $set: {
+          'milestones.$.status': 'approved',
+          // Optional: Store releaseJobId/metadata here
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedProject) {
+      throw new Error('UpdateFailed');
+    }
+
+    // PRODUCTION: Emit 'project.milestone.approved' event (Task 32 subscribes for Payouts)
+    eventEmitter.emit('project.milestone.approved', { projectId, milestoneId, releaseJobId });
+
+    return this.getMilestone(updatedProject, milestoneId);
+  }
+
+  /**
+   * Milestone Dispute Logic. Triggers fund hold.
+   * @param projectId - Project ID
+   * @param completerId - User ID disputing (must be member)
+   * @param milestoneId - Milestone ID to dispute
+   * @param reason - Reason for dispute
+   * @param evidenceAssetIds - Optional evidence asset IDs
+   * @returns Updated milestone
+   * @throws {Error} - 'ProjectNotFound', 'PermissionDenied', 'MilestoneNotFound', 'MilestoneAlreadyProcessed'
+   */
+  public async disputeMilestone(
+    projectId: string,
+    completerId: string,
+    milestoneId: string,
+    _reason: string, // Reserved for future dispute metadata storage
+    _evidenceAssetIds?: string[] // Reserved for future dispute metadata storage
+  ): Promise<IMilestone> {
+    const project = (await ProjectModel.findById(new Types.ObjectId(projectId)).lean()) as IProject | null;
+    if (!project) {
+      throw new Error('ProjectNotFound');
+    }
+
+    // 1. Check Project Membership (Requester must be a member)
+    if (!project.teamMemberIds.some(id => id.toString() === completerId)) {
+      throw new Error('PermissionDenied');
+    }
+
+    const milestone = this.getMilestone(project, milestoneId);
+    const milestoneObjectId = new Types.ObjectId(milestoneId);
+
+    // 2. STATE CHECK (Cannot dispute if already approved/disputed)
+    if (milestone.status === 'approved' || milestone.status === 'disputed' || milestone.status === 'rejected') {
+      throw new Error('MilestoneAlreadyProcessed');
+    }
+
+    // 3. Trigger Fund Hold (Mocked External Call, if funded)
+    let disputeId: string | undefined;
+    if (milestone.escrowId) {
+      disputeId = `dispute_${crypto.randomBytes(6).toString('hex')}`;
+      await paymentService.holdEscrow(milestone.escrowId.toString(), disputeId);
+    }
+
+    // 4. Perform Atomic Status Update
+    const updatedProject = await ProjectModel.findOneAndUpdate(
+      { _id: project._id, 'milestones._id': milestoneObjectId },
+      {
+        $set: {
+          'milestones.$.status': 'disputed',
+          // PRODUCTION: Store dispute metadata (reason, asset IDs, disputeId) in a log/sub-document
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedProject) {
+      throw new Error('UpdateFailed');
+    }
+
+    // PRODUCTION: Emit 'project.milestone.disputed' event (Task 65 subscribes for Admin)
+    eventEmitter.emit('project.milestone.disputed', { projectId, milestoneId, completerId, disputeId });
+
+    return this.getMilestone(updatedProject, milestoneId);
   }
 }

@@ -24,6 +24,9 @@ import {
   listProjectsValidation,
   archiveProjectController,
   getTeamMembersController,
+  approveMilestoneController,
+  disputeMilestoneController,
+  disputeValidation,
 } from '../controllers/project.controller';
 import { listProjectAssetsController, listProjectAssetsValidation } from '../controllers/asset.controller';
 import { authenticate, optionalAuthenticate } from '../middleware/auth.middleware';
@@ -145,6 +148,27 @@ router.get(
   authenticate,
   listProjectAssetsValidation,
   listProjectAssetsController
+);
+
+// --- Milestone Approval/Dispute Endpoints (Task 30) ---
+
+// POST /projects/:projectId/milestones/:milestoneId/approve - Owner approves (triggers fund release)
+router.post(
+  '/:projectId/milestones/:milestoneId/approve',
+  authenticate,
+  authorize([PERMISSIONS.PROJECT_CREATE]), // Must be owner (checked in service)
+  milestoneParamValidation,
+  approveMilestoneController
+);
+
+// POST /projects/:projectId/milestones/:milestoneId/dispute - Member disputes (triggers fund hold)
+router.post(
+  '/:projectId/milestones/:milestoneId/dispute',
+  authenticate,
+  milestoneParamValidation,
+  disputeValidation,
+  // NOTE: Membership check is done in the service
+  disputeMilestoneController
 );
 
 // --- Project Finalization Endpoints (Task 29) ---

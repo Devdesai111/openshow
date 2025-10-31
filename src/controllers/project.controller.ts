@@ -710,6 +710,151 @@ export const updateProjectController = async (req: Request, res: Response): Prom
   }
 };
 
+// --- Milestone Approval/Dispute Validation ---
+
+export const disputeValidation = [
+  body('reason').isString().isLength({ min: 10 }).withMessage('A reason for dispute is required (min 10 chars).'),
+  body('evidenceAssetIds').optional().isArray().withMessage('Evidence must be an array of asset IDs.'),
+  body('evidenceAssetIds.*').optional().isMongoId().withMessage('Evidence asset IDs must be valid Mongo IDs.'),
+];
+
+// --- Milestone Approval/Dispute Controllers (Task 30) ---
+
+/** Owner approves a completed milestone. POST /projects/:projectId/milestones/:milestoneId/approve */
+export const approveMilestoneController = async (req: Request, res: Response): Promise<void> => {
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId, milestoneId } = req.params as { projectId: string; milestoneId: string };
+
+    const approvedMilestone = await projectService.approveMilestone(projectId, requesterId, milestoneId, requesterRole);
+
+    // NOTE: Assume external service handles the actual release; we report status as initiated
+    return ResponseBuilder.success(
+      res,
+      {
+        milestoneId: approvedMilestone._id!.toString(),
+        status: approvedMilestone.status,
+        escrowReleaseStatus: 'release_initiated',
+        message: 'Milestone approved and funds release process initiated.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'MilestoneNotCompleted') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Milestone must be completed before it can be approved.',
+        409
+      );
+    }
+    if (errorMessage === 'MilestoneNotFunded') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Milestone has no associated escrow funds to release.',
+        409
+      );
+    }
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'Only the project owner can approve milestones.',
+        403
+      );
+    }
+    if (errorMessage === 'ProjectNotFound' || errorMessage === 'MilestoneNotFound') {
+      return ResponseBuilder.notFound(res, 'Milestone');
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during approval.',
+      500
+    );
+  }
+};
+
+/** Member/Owner disputes a milestone. POST /projects/:projectId/milestones/:milestoneId/dispute */
+export const disputeMilestoneController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { projectId, milestoneId } = req.params as { projectId: string; milestoneId: string };
+
+    const updatedMilestone = await projectService.disputeMilestone(
+      projectId,
+      requesterId,
+      milestoneId,
+      req.body.reason,
+      req.body.evidenceAssetIds
+    );
+
+    return ResponseBuilder.success(
+      res,
+      {
+        milestoneId: updatedMilestone._id!.toString(),
+        status: updatedMilestone.status,
+        message: 'Milestone dispute logged. Funds release is paused.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'You must be a project member to dispute a milestone.',
+        403
+      );
+    }
+    if (errorMessage === 'MilestoneAlreadyProcessed') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Milestone is already approved or disputed.',
+        409
+      );
+    }
+    if (errorMessage === 'ProjectNotFound' || errorMessage === 'MilestoneNotFound') {
+      return ResponseBuilder.notFound(res, 'Milestone');
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during dispute.',
+      500
+    );
+  }
+};
+
 // --- Final Project Mutators/Readers (Task 29) ---
 
 /** Archives a project (soft delete). DELETE /projects/:projectId */
