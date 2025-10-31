@@ -81,3 +81,108 @@ export const calculatePreviewController = async (req: Request, res: Response): P
   }
 };
 
+// --- Schedule Payouts Validation ---
+
+export const schedulePayoutsValidation = [
+  body('escrowId').isMongoId().withMessage('Escrow ID is required and must be valid Mongo ID.'),
+  body('projectId').isMongoId().withMessage('Project ID is required and must be valid Mongo ID.'),
+  body('milestoneId').optional().isMongoId().withMessage('Milestone ID must be valid Mongo ID.'),
+  body('amount').isInt({ min: 1 }).toInt().withMessage('Amount must be a positive integer (cents).'),
+  body('currency').isString().isLength({ min: 3, max: 3 }).withMessage('Currency must be a 3-letter ISO code.'),
+];
+
+/** Schedules payouts from a released escrow. POST /revenue/schedule-payouts */
+export const schedulePayoutsController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  // Authorization Check: Must be Admin (Internal Call)
+  if (requesterRole !== 'admin') {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.PERMISSION_DENIED,
+      'Access denied. Endpoint is for system/admin use only.',
+      403
+    );
+  }
+
+  try {
+    // Service Call (Idempotency check performed inside service)
+    const savedBatch = await revenueService.schedulePayouts(requesterId, req.body);
+
+    // Success (201 Created)
+    return ResponseBuilder.success(
+      res,
+      {
+        batchId: savedBatch.batchId,
+        status: savedBatch.status,
+        itemsCount: savedBatch.items.length,
+        estimatedTotalPayout: savedBatch.totalNet,
+        message: 'Payout batch scheduled and execution job queued.',
+      },
+      201
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    // Error Handling
+    if (errorMessage === 'PayoutAlreadyScheduled') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Payout for this escrow is already scheduled.',
+        409
+      );
+    }
+    if (errorMessage.includes('RevenueSplitInvalid')) {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.VALIDATION_ERROR,
+        'Revenue model validation failed during scheduling.',
+        422
+      );
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+    if (errorMessage === 'RevenueModelNotFound') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.VALIDATION_ERROR,
+        'Revenue model not found for the project.',
+        422
+      );
+    }
+    if (errorMessage === 'NoRecipients') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.VALIDATION_ERROR,
+        'No valid recipients found for payout (all splits are placeholders).',
+        422
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error scheduling payouts.',
+      500
+    );
+  }
+};
+
