@@ -44,4 +44,39 @@ export const searchCreatorsController = async (req: Request, res: Response): Pro
   }
 };
 
+export const searchProjectsValidation = [
+  query('q').optional().isString().withMessage('Query must be a string.'),
+  query('category').optional().isString().withMessage('Category must be a string.'),
+  query('sort').optional().isIn(['newest', 'relevance', 'budget_desc']).withMessage('Invalid sort parameter.'),
+  query('page').optional().isInt({ min: 1 }).toInt().withMessage('Page must be a positive integer.'),
+  query('per_page').optional().isInt({ min: 1, max: 100 }).toInt().withMessage('Per_page must be between 1 and 100.'),
+];
+
+/** Handles the search and listing of public projects. GET /market/projects */
+export const searchProjectsController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const results = await discoveryService.searchProjects(req.query);
+    return ResponseBuilder.success(res, results, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'An unexpected error occurred during project search.',
+      500
+    );
+  }
+};
+
 

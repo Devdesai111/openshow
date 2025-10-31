@@ -21,7 +21,7 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.use('/auth', authRoutes);
 app.use('/users', userProfileRoutes);
-app.use('/', discoveryRoutes);
+app.use('/market', discoveryRoutes); // Marketplace/Discovery routes (Task 10, 16)
 app.use('/notifications', notificationRoutes);
 app.use('/projects', projectRoutes);
 app.use('/', utilityRoutes); // Health and metrics at root level

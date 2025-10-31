@@ -27,6 +27,15 @@ class MockNotificationService {
 
 const mockNotificationService = new MockNotificationService();
 
+// Mock Event Emitter for Publishing Indexing Events (Task 16)
+class MockEventEmitter {
+  public emit(event: string, payload: any): void {
+    console.warn(`[EVENT EMITTED] ${event}:`, JSON.stringify(payload));
+    // PRODUCTION: This payload would be sent to a Message Broker (Kafka/RabbitMQ)
+  }
+}
+const eventEmitter = new MockEventEmitter();
+
 export class ProjectService {
   /**
    * Creates a new project from the 6-step wizard payload.
@@ -86,9 +95,13 @@ export class ProjectService {
       }
     }
 
-    // 4. Trigger Events
-    // PRODUCTION: Emit 'project.created' event (Task 16 subscribes for indexing)
-    console.warn(`[Event] Project ${savedProject._id?.toString()} created by ${ownerId}.`);
+    // 4. Trigger Events for Indexing (Task 16)
+    eventEmitter.emit('project.created', {
+      projectId: savedProject._id!.toString(),
+      ownerId: ownerId,
+      visibility: savedProject.visibility,
+      title: savedProject.title,
+    });
 
     return savedProject.toObject() as IProject;
   }
@@ -765,11 +778,48 @@ export class ProjectService {
       throw new Error('UpdateFailed');
     }
 
-    // 4. Trigger Events
-    // PRODUCTION: Emit 'project.updated' event (Task 16 subscribes for indexing)
-    console.warn(`[Event] Project ${projectId} updated. Visibility: ${updatedProject.visibility}`);
+    // 4. Trigger Events for Indexing (Updated/Visibility Change) (Task 16)
+    eventEmitter.emit('project.updated', {
+      projectId: updatedProject._id!.toString(),
+      changes: Object.keys(update),
+      visibility: updatedProject.visibility,
+      status: updatedProject.status,
+      ownerId: updatedProject.ownerId.toString(),
+    });
 
     // 5. Return updated DTO (use the detailed getter)
     return this.getProjectDetails(projectId, requesterId, requesterRole);
+  }
+
+  /**
+   * Archives a project (sets status to 'archived' and visibility to 'private').
+   * @param projectId - Project ID to archive
+   * @param requesterId - User ID archiving (must be owner)
+   * @param requesterRole - User role for admin check
+   * @throws {Error} - 'PermissionDenied', 'ProjectNotFound'
+   */
+  public async archiveProject(
+    projectId: string,
+    requesterId: string,
+    requesterRole?: string
+  ): Promise<void> {
+    // 1. Owner Access Check
+    await this.checkOwnerAccess(projectId, requesterId, requesterRole);
+
+    // 2. Archive Project
+    const result = await ProjectModel.updateOne(
+      { _id: new Types.ObjectId(projectId) },
+      { $set: { status: 'archived', visibility: 'private' } }
+    );
+
+    if (result.modifiedCount === 0) {
+      throw new Error('ProjectNotFound');
+    }
+
+    // 3. Emit archive event for index removal (Task 16)
+    eventEmitter.emit('project.archived', { projectId });
+
+    // PRODUCTION: Check for and handle pending escrows (Task 35)
+    console.warn(`[Event] Project ${projectId} archived.`);
   }
 }

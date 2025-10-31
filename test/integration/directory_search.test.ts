@@ -5,7 +5,7 @@ import { UserModel } from '../../src/models/user.model';
 import { AuthSessionModel } from '../../src/models/authSession.model';
 import { CreatorProfileModel } from '../../src/models/creatorProfile.model';
 
-describe('Creator Directory Search & Listing (GET /creators)', () => {
+describe('Creator Directory Search & Listing (GET /market/creators)', () => {
   beforeAll(async () => {
     const testDbUri = process.env.MONGODB_URI_TEST || 'mongodb://localhost:27017/openshow-test';
     if (mongoose.connection.readyState !== 0) {
@@ -59,7 +59,7 @@ describe('Creator Directory Search & Listing (GET /creators)', () => {
   });
 
   it('T10.1 - should support basic pagination', async () => {
-    const res = await request(app).get('/creators?page=1&per_page=2');
+    const res = await request(app).get('/market/creators?page=1&per_page=2');
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
     expect(res.body.data.length).toBeLessThanOrEqual(2);
@@ -68,7 +68,7 @@ describe('Creator Directory Search & Listing (GET /creators)', () => {
   });
 
   it('T10.2 - should filter by verified=true', async () => {
-    const res = await request(app).get('/creators?verified=true&per_page=50');
+    const res = await request(app).get('/market/creators?verified=true&per_page=50');
     expect(res.status).toBe(200);
     expect(res.body.data.length).toBeGreaterThan(0);
     for (const item of res.body.data) {
@@ -78,7 +78,7 @@ describe('Creator Directory Search & Listing (GET /creators)', () => {
   });
 
   it('T10.3 - should filter by skill match', async () => {
-    const res = await request(app).get('/creators?skill=video-editing&per_page=50');
+    const res = await request(app).get('/market/creators?skill=video-editing&per_page=50');
     expect(res.status).toBe(200);
     expect(res.body.data.length).toBeGreaterThan(0);
     for (const item of res.body.data) {
@@ -87,13 +87,13 @@ describe('Creator Directory Search & Listing (GET /creators)', () => {
   });
 
   it('T10.4 - should return 422 for invalid per_page > 100', async () => {
-    const res = await request(app).get('/creators?per_page=200');
+    const res = await request(app).get('/market/creators?per_page=200');
     expect(res.status).toBe(422);
     expect(res.body.error).toHaveProperty('code', 'validation_error');
   });
 
   it('T10.5 - should return public DTO (no email or private fields)', async () => {
-    const res = await request(app).get('/creators');
+    const res = await request(app).get('/market/creators');
     expect(res.status).toBe(200);
     for (const item of res.body.data) {
       expect(item).toHaveProperty('id');
