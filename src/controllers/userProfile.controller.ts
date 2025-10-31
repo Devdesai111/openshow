@@ -45,6 +45,28 @@ export const profileUpdateValidation = [
     .withMessage('Availability must be one of: open, busy, invite-only.'),
 ];
 
+// Portfolio item validation - must have assetId OR externalLink
+export const portfolioItemValidation = [
+  body().custom(value => {
+    if (!value.assetId && !value.externalLink) {
+      throw new Error('Portfolio item must contain either assetId or externalLink.');
+    }
+    return true;
+  }),
+  body('assetId').optional().isMongoId().withMessage('Asset ID must be a valid Mongo ID.').bail(),
+  body('externalLink')
+    .optional()
+    .isURL({ protocols: ['http', 'https'] })
+    .withMessage('External link must be a valid URL.'),
+  body('title').optional().isString().isLength({ max: 200 }).withMessage('Title max 200 chars.'),
+  body('description').optional().isString().isLength({ max: 500 }).withMessage('Description max 500 chars.'),
+];
+
+// Portfolio item ID param validation
+export const portfolioItemIdParamValidation = [
+  param('itemId').isMongoId().withMessage('Invalid Portfolio Item ID format.'),
+];
+
 /**
  * Handles fetching a user profile. GET /users/:userId
  */
@@ -144,6 +166,173 @@ export const updateUserController = async (req: Request, res: Response): Promise
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error updating profile.',
+      500
+    );
+  }
+};
+
+// --- Portfolio Controllers ---
+
+/**
+ * Adds a new portfolio item. POST /users/:creatorId/portfolio
+ */
+export const addPortfolioItemController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Input Validation (including custom assetId/externalLink check)
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? err.path : undefined,
+        reason: err.msg,
+      }))
+    );
+  }
+
+  const creatorId = req.params.creatorId as string;
+  const requesterId = req.user?.sub;
+
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  // Security check: Only owner can add to their portfolio
+  if (creatorId !== requesterId) {
+    return ResponseBuilder.forbidden(res, 'You can only manage your own portfolio.');
+  }
+
+  try {
+    // 2. Service Call
+    const newItem = await userProfileService.addPortfolioItem(creatorId, req.body);
+
+    // 3. Success (201 Created)
+    return ResponseBuilder.success(res, newItem, 201);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PortfolioDataMissing') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.INVALID_INPUT,
+        'Portfolio item requires an Asset ID or an external link.',
+        422
+      );
+    }
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error adding portfolio item.',
+      500
+    );
+  }
+};
+
+/**
+ * Updates an existing portfolio item. PUT /users/:creatorId/portfolio/:itemId
+ */
+export const updatePortfolioItemController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  // 1. Input Validation
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? err.path : undefined,
+        reason: err.msg,
+      }))
+    );
+  }
+
+  const { creatorId, itemId } = req.params;
+  const requesterId = req.user?.sub;
+
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  // Security check: Only owner can update their portfolio
+  if (creatorId !== requesterId) {
+    return ResponseBuilder.forbidden(res, 'You can only manage your own portfolio.');
+  }
+
+  try {
+    // 2. Service Call
+    const updatedItem = await userProfileService.updatePortfolioItem(
+      creatorId,
+      itemId as string,
+      req.body
+    );
+
+    // 3. Success (200 OK)
+    return ResponseBuilder.success(res, updatedItem, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'ItemNotFound') {
+      return ResponseBuilder.notFound(res, 'Portfolio item');
+    }
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error updating portfolio item.',
+      500
+    );
+  }
+};
+
+/**
+ * Deletes a portfolio item. DELETE /users/:creatorId/portfolio/:itemId
+ */
+export const deletePortfolioItemController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  // 1. Input Validation
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? err.path : undefined,
+        reason: err.msg,
+      }))
+    );
+  }
+
+  const { creatorId, itemId } = req.params;
+  const requesterId = req.user?.sub;
+
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  // Security check: Only owner can delete from their portfolio
+  if (creatorId !== requesterId) {
+    return ResponseBuilder.forbidden(res, 'You can only manage your own portfolio.');
+  }
+
+  try {
+    // 2. Service Call
+    await userProfileService.deletePortfolioItem(creatorId, itemId as string);
+
+    // 3. Success (204 No Content)
+    res.status(204).send();
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'ItemNotFound') {
+      return ResponseBuilder.notFound(res, 'Portfolio item');
+    }
+    if (errorMessage === 'UserNotFound') {
+      return ResponseBuilder.notFound(res, 'User');
+    }
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error deleting portfolio item.',
       500
     );
   }

@@ -23,6 +23,14 @@ interface IProfileUpdateData {
   availability?: 'open' | 'busy' | 'invite-only';
 }
 
+// DTO for incoming portfolio data
+interface IPortfolioData {
+  title?: string;
+  description?: string;
+  assetId?: string; // string representation of ObjectId
+  externalLink?: string;
+}
+
 export class UserProfileService {
   /**
    * Retrieves a user profile, handling visibility based on the requester.
@@ -135,6 +143,162 @@ export class UserProfileService {
     console.warn(`[Event] User ${targetUserId} profile updated.`);
 
     return updatedProfile;
+  }
+
+  /**
+   * Adds a new portfolio item to a creator's profile.
+   * @throws {Error} - 'UserNotFound', 'PortfolioDataMissing'.
+   */
+  public async addPortfolioItem(
+    creatorId: string,
+    itemData: IPortfolioData
+  ): Promise<{ id: string; title?: string; description?: string; assetId?: string; externalLink?: string }> {
+    const creatorObjectId = new Types.ObjectId(creatorId);
+
+    // 1. Validation: Must have at least assetId or externalLink
+    if (!itemData.assetId && !itemData.externalLink) {
+      throw new Error('PortfolioDataMissing');
+    }
+
+    // 2. Build new item object (Mongoose will assign _id on push)
+    const newItemId = new Types.ObjectId();
+    const newItem = {
+      _id: newItemId,
+      title: itemData.title,
+      description: itemData.description,
+      assetId: itemData.assetId ? new Types.ObjectId(itemData.assetId) : undefined,
+      externalLink: itemData.externalLink,
+    };
+
+    // 3. Push new item to the embedded array
+    const updatedProfile = await CreatorProfileModel.findOneAndUpdate(
+      { userId: creatorObjectId },
+      { $push: { portfolioItems: newItem } },
+      { new: true, upsert: true }
+    );
+
+    if (!updatedProfile) {
+      throw new Error('UserNotFound');
+    }
+
+    // 4. Return the newly created item
+    const addedItem = updatedProfile.portfolioItems.find(item =>
+      item._id?.equals(newItemId)
+    );
+
+    if (!addedItem) {
+      throw new Error('InternalSaveFailed');
+    }
+
+    // PRODUCTION: Emit 'creator.portfolio.added' event
+    console.warn(`[Event] Creator ${creatorId} added portfolio item ${addedItem._id?.toString()}`);
+
+    // Return sanitized DTO with string IDs
+    return {
+      id: addedItem._id?.toString() || '',
+      title: addedItem.title,
+      description: addedItem.description,
+      assetId: addedItem.assetId?.toString(),
+      externalLink: addedItem.externalLink,
+    };
+  }
+
+  /**
+   * Updates an existing portfolio item.
+   * @throws {Error} - 'ProfileNotFound', 'ItemNotFound', 'PermissionDenied'.
+   */
+  public async updatePortfolioItem(
+    creatorId: string,
+    itemId: string,
+    updateData: IPortfolioData
+  ): Promise<{ id: string; title?: string; description?: string; assetId?: string; externalLink?: string }> {
+    const creatorObjectId = new Types.ObjectId(creatorId);
+    const itemObjectId = new Types.ObjectId(itemId);
+
+    // 1. Build dynamic update path for the embedded subdocument
+    const setUpdate: Record<string, unknown> = {};
+    if (updateData.title !== undefined) setUpdate['portfolioItems.$.title'] = updateData.title;
+    if (updateData.description !== undefined)
+      setUpdate['portfolioItems.$.description'] = updateData.description;
+
+    // Handle assetId/externalLink mutual exclusivity or updates
+    if (updateData.assetId !== undefined) {
+      setUpdate['portfolioItems.$.assetId'] = updateData.assetId
+        ? new Types.ObjectId(updateData.assetId)
+        : null;
+      setUpdate['portfolioItems.$.externalLink'] = null;
+    }
+    if (updateData.externalLink !== undefined) {
+      setUpdate['portfolioItems.$.externalLink'] = updateData.externalLink;
+      setUpdate['portfolioItems.$.assetId'] = null;
+    }
+
+    // 2. Execute atomic update
+    const updatedProfile = await CreatorProfileModel.findOneAndUpdate(
+      {
+        userId: creatorObjectId,
+        'portfolioItems._id': itemObjectId,
+      },
+      { $set: setUpdate },
+      { new: true }
+    );
+
+    if (!updatedProfile) {
+      throw new Error('ItemNotFound');
+    }
+
+    // 3. Return the specific updated item
+    const updatedItem = updatedProfile.portfolioItems.find(item => item._id?.equals(itemObjectId));
+
+    if (!updatedItem) {
+      throw new Error('ItemNotFound');
+    }
+
+    // PRODUCTION: Emit 'creator.portfolio.updated' event
+    console.warn(`[Event] Creator ${creatorId} updated portfolio item ${itemId}`);
+
+    return {
+      id: updatedItem._id?.toString() || '',
+      title: updatedItem.title,
+      description: updatedItem.description,
+      assetId: updatedItem.assetId?.toString(),
+      externalLink: updatedItem.externalLink,
+    };
+  }
+
+  /**
+   * Deletes a portfolio item.
+   * @throws {Error} - 'ItemNotFound'.
+   */
+  public async deletePortfolioItem(creatorId: string, itemId: string): Promise<void> {
+    const creatorObjectId = new Types.ObjectId(creatorId);
+    const itemObjectId = new Types.ObjectId(itemId);
+
+    // 1. First check if the item exists
+    const profile = await CreatorProfileModel.findOne({ userId: creatorObjectId });
+
+    if (!profile) {
+      const userExists = await UserModel.exists({ _id: creatorObjectId });
+      if (!userExists) {
+        throw new Error('UserNotFound');
+      }
+      throw new Error('ItemNotFound');
+    }
+
+    // Check if the specific item exists in the portfolio
+    const itemExists = profile.portfolioItems.some(item => item._id?.equals(itemObjectId));
+    if (!itemExists) {
+      throw new Error('ItemNotFound');
+    }
+
+    // 2. Execute atomic pull operation (remove from embedded array)
+    await CreatorProfileModel.updateOne(
+      { userId: creatorObjectId },
+      { $pull: { portfolioItems: { _id: itemObjectId } } }
+    );
+
+    // PRODUCTION: Emit 'creator.portfolio.deleted' event
+    console.warn(`[Event] Creator ${creatorId} deleted portfolio item ${itemId}`);
   }
 }
 

@@ -4,6 +4,11 @@ import {
   updateUserController,
   userIdParamValidation,
   profileUpdateValidation,
+  addPortfolioItemController,
+  updatePortfolioItemController,
+  deletePortfolioItemController,
+  portfolioItemValidation,
+  portfolioItemIdParamValidation,
 } from '../controllers/userProfile.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -32,6 +37,18 @@ router.get('/:userId', userIdParamValidation, authenticate, getUserController);
 
 // PUT /users/:userId - Update user profile (self or admin) (Task 8)
 router.put('/:userId', authenticate, profileUpdateValidation, updateUserController);
+
+// --- Portfolio Endpoints (Task 9) ---
+
+// POST /users/:creatorId/portfolio - Add portfolio item (owner only)
+router.post('/:creatorId/portfolio', authenticate, portfolioItemValidation, addPortfolioItemController);
+
+// PUT /users/:creatorId/portfolio/:itemId - Update portfolio item (owner only)
+// Note: No portfolioItemValidation here - partial updates allowed
+router.put('/:creatorId/portfolio/:itemId', authenticate, portfolioItemIdParamValidation, updatePortfolioItemController);
+
+// DELETE /users/:creatorId/portfolio/:itemId - Delete portfolio item (owner only)
+router.delete('/:creatorId/portfolio/:itemId', authenticate, portfolioItemIdParamValidation, deletePortfolioItemController);
 
 // --- NOTE: Creator directory endpoints (Task 10) will be added here ---
 

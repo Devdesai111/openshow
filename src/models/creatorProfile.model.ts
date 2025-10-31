@@ -1,8 +1,9 @@
 import { Schema, model, Types } from 'mongoose';
 
 // Nested interface for Portfolio Items
-interface IPortfolioItem {
-  assetId: Types.ObjectId; // Reference to Asset (Task 19)
+export interface IPortfolioItem {
+  _id?: Types.ObjectId;
+  assetId?: Types.ObjectId; // Reference to Asset (Task 19)
   title?: string;
   description?: string;
   externalLink?: string;
@@ -33,12 +34,12 @@ export interface ICreatorProfile {
 
 const PortfolioItemSchema = new Schema<IPortfolioItem>(
   {
-    assetId: { type: Schema.Types.ObjectId, ref: 'Asset', required: true },
+    assetId: { type: Schema.Types.ObjectId, ref: 'Asset' }, // Optional - either this or externalLink
     title: { type: String },
     description: { type: String },
-    externalLink: { type: String },
+    externalLink: { type: String }, // Optional - either this or assetId
   },
-  { _id: false }
+  { _id: true } // Enable _id for subdocuments
 );
 
 const CreatorProfileSchema = new Schema<ICreatorProfile>(
