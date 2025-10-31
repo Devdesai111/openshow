@@ -2,6 +2,7 @@
 import { ProjectModel, IProject } from '../models/project.model';
 import { calculateRevenueSplit } from '../utils/revenueCalculator';
 import { PayoutBatchModel, IPayoutBatch, IPayoutItem } from '../models/payout.model';
+import { IAuthUser } from '../middleware/auth.middleware';
 import { Types } from 'mongoose';
 import * as crypto from 'crypto';
 
@@ -28,6 +29,16 @@ interface ISchedulePayoutsRequestDTO {
   milestoneId?: string;
   amount: number; // Total escrow amount
   currency: string;
+}
+
+// Reusable interface for Payout List DTO
+interface IPayoutListItemDTO {
+  payoutItemId: string;
+  projectId: string;
+  netAmount: number;
+  status: string;
+  createdAt?: string;
+  fees: number;
 }
 
 export class RevenueService {
@@ -136,6 +147,173 @@ export class RevenueService {
     eventEmitter.emit('payout.batch.scheduled', { batchId: savedBatch.batchId, jobId });
 
     return savedBatch.toObject() as IPayoutBatch;
+  }
+
+  /**
+   * Lists a user's payouts with pagination and status filters.
+   * @param requesterId - User ID of requester
+   * @param requesterRole - Role of requester
+   * @param queryParams - Query parameters (status, page, per_page)
+   * @returns Paginated list of payout items
+   */
+  public async listUserPayouts(
+    requesterId: string,
+    requesterRole: IAuthUser['role'],
+    queryParams: {
+      status?: string;
+      page?: number | string;
+      per_page?: number | string;
+    }
+  ): Promise<{
+    meta: {
+      page: number;
+      per_page: number;
+      total: number;
+      total_pages: number;
+    };
+    data: IPayoutListItemDTO[];
+  }> {
+    const { status, page = 1, per_page = 20 } = queryParams;
+    const limit = typeof per_page === 'number' ? per_page : parseInt(per_page, 10);
+    const pageNum = typeof page === 'number' ? page : parseInt(page, 10);
+    const skip = (pageNum - 1) * limit;
+    const recipientObjectId = new Types.ObjectId(requesterId);
+
+    // Authorization: Non-admin users only see their own payouts
+    // Admin users can see all payouts (no userId filter)
+    const userIdFilter: any = requesterRole === 'admin' ? {} : { 'items.userId': recipientObjectId };
+
+    const pipeline: any[] = [];
+
+    // 1. Match Payout Batches relevant to the recipient
+    const matchStage: any = {
+      ...userIdFilter,
+    };
+
+    // If status filter is provided and user is not admin, filter items by status
+    if (status) {
+      matchStage['items.status'] = status;
+    }
+
+    pipeline.push({ $match: matchStage });
+
+    // 2. Unwind the items array (de-normalize the embedded documents)
+    pipeline.push({ $unwind: '$items' });
+
+    // 3. Re-match to filter out items not belonging to the recipient (necessary after unwind)
+    const itemMatchStage: any = {};
+    if (requesterRole !== 'admin') {
+      itemMatchStage['items.userId'] = recipientObjectId;
+    }
+    if (status) {
+      itemMatchStage['items.status'] = status;
+    }
+    pipeline.push({ $match: itemMatchStage });
+
+    // 4. Group (Count Total and Prepare for Final Projection)
+    const countPipeline = [...pipeline]; // Copy pipeline up to $match
+    countPipeline.push({ $count: 'total' });
+
+    // 5. Sort, Skip, and Limit
+    pipeline.push({ $sort: { 'items.createdAt': -1 } }); // Sort by item creation date
+    pipeline.push({ $skip: skip });
+    pipeline.push({ $limit: limit });
+
+    // 6. Final Projection to DTO
+    pipeline.push({
+      $project: {
+        _id: 0,
+        payoutItemId: { $toString: '$items._id' },
+        projectId: { $toString: '$projectId' },
+        netAmount: '$items.netAmount',
+        fees: '$items.fees',
+        status: '$items.status',
+        createdAt: { $ifNull: ['$items.createdAt', '$createdAt'] }, // Use batch createdAt if item createdAt is missing
+      },
+    });
+
+    const [totalResults, payouts] = await Promise.all([
+      PayoutBatchModel.aggregate(countPipeline),
+      PayoutBatchModel.aggregate(pipeline),
+    ]);
+
+    const total = totalResults.length > 0 ? (totalResults[0].total as number) : 0;
+
+    return {
+      meta: {
+        page: pageNum,
+        per_page: limit,
+        total,
+        total_pages: Math.ceil(total / limit),
+      },
+      data: payouts as IPayoutListItemDTO[],
+    };
+  }
+
+  /**
+   * Retrieves detailed information for a single payout item.
+   * @param payoutItemId - Payout item ID
+   * @param requesterId - User ID of requester
+   * @param requesterRole - Role of requester
+   * @returns Payout item details
+   * @throws {Error} - 'PayoutNotFound', 'PermissionDenied'
+   */
+  public async getPayoutDetails(
+    payoutItemId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role']
+  ): Promise<{
+    payoutItemId: string;
+    projectId: string;
+    escrowId: string;
+    userId: string;
+    amount: number;
+    fees: number;
+    taxWithheld: number;
+    netAmount: number;
+    status: string;
+    providerPayoutId?: string;
+    failureReason?: string;
+    attempts: number;
+    processedAt?: string;
+  }> {
+    const itemObjectId = new Types.ObjectId(payoutItemId);
+
+    // 1. Find the item within its batch
+    const batch = await PayoutBatchModel.findOne({ 'items._id': itemObjectId }).lean();
+    if (!batch) {
+      throw new Error('PayoutNotFound');
+    }
+
+    const item = batch.items.find(i => i._id?.equals(itemObjectId));
+    if (!item) {
+      throw new Error('PayoutNotFound');
+    }
+
+    // 2. Authorization Check (Self or Admin)
+    const isRecipient = item.userId.toString() === requesterId;
+    const isAdmin = requesterRole === 'admin';
+
+    if (!isRecipient && !isAdmin) {
+      throw new Error('PermissionDenied'); // Security by obscurity (404/403)
+    }
+
+    // 3. Map to DTO
+    return {
+      payoutItemId: item._id!.toString(),
+      projectId: batch.projectId?.toString() || '',
+      escrowId: batch.escrowId.toString(),
+      userId: item.userId.toString(),
+      amount: item.amount,
+      fees: item.fees,
+      taxWithheld: item.taxWithheld,
+      netAmount: item.netAmount,
+      status: item.status,
+      providerPayoutId: item.providerPayoutId,
+      failureReason: item.failureReason,
+      attempts: item.attempts,
+      processedAt: item.processedAt?.toISOString(),
+    };
   }
 }
 

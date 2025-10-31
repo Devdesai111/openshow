@@ -5,6 +5,10 @@ import {
   calculateRevenueValidation,
   schedulePayoutsController,
   schedulePayoutsValidation,
+  listUserPayoutsController,
+  getPayoutDetailsController,
+  payoutsReadValidation,
+  payoutItemIdValidation,
 } from '../controllers/revenue.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -31,7 +35,18 @@ router.post(
   schedulePayoutsController
 );
 
-// NOTE: Future endpoints (reports) will be added here.
+// --- Creator Earnings Dashboard Endpoints (Task 38) ---
+
+// GET /revenue/earnings - List user's payouts (earnings dashboard)
+router.get('/earnings', authenticate, payoutsReadValidation, listUserPayoutsController);
+
+// GET /revenue/payouts/:payoutItemId - Get specific payout details
+router.get(
+  '/payouts/:payoutItemId',
+  authenticate,
+  payoutItemIdValidation,
+  getPayoutDetailsController
+);
 
 export default router;
 
