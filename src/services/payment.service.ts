@@ -430,5 +430,151 @@ export class PaymentService {
 
     return { escrow: updatedEscrow, providerRefundId: pspOutput.providerRefundId };
   }
+
+  /**
+   * Lists financial transactions with self-or-admin authorization filters.
+   * @param requesterId - User ID of requester
+   * @param requesterRole - Role of requester
+   * @param queryParams - Query parameters (type, status, page, per_page)
+   * @returns Paginated list of transactions
+   */
+  public async listTransactions(
+    requesterId: string,
+    requesterRole: IAuthUser['role'],
+    queryParams: {
+      type?: string;
+      status?: string;
+      page?: number | string;
+      per_page?: number | string;
+    }
+  ): Promise<{
+    meta: {
+      page: number;
+      per_page: number;
+      total: number;
+      total_pages: number;
+    };
+    data: Array<{
+      transactionId: string;
+      projectId?: string;
+      type: string;
+      amount: number;
+      currency: string;
+      status: string;
+      createdAt: string;
+    }>;
+  }> {
+    const { type, status, page = 1, per_page = 20 } = queryParams;
+    const limit = typeof per_page === 'number' ? per_page : parseInt(per_page, 10);
+    const pageNum = typeof page === 'number' ? page : parseInt(page, 10);
+    const skip = (pageNum - 1) * limit;
+
+    const filters: Record<string, any> = {};
+
+    // 1. Authorization Filter (CRITICAL SECURITY)
+    if (requesterRole !== 'admin') {
+      // Non-Admin users only see transactions where they are the Payer
+      filters.payerId = new Types.ObjectId(requesterId);
+      // Payee ID logic is complex (payouts), but for payment/refund simplicity, only check PayerId for now
+      // Future: { payeeId: new Types.ObjectId(requesterId) }
+    }
+    // Admin sees all, so no payerId filter is applied if they have FINANCE_MANAGE perm
+
+    // 2. Additional Filters
+    if (type) {
+      filters.type = type;
+    }
+    if (status) {
+      filters.status = status;
+    }
+
+    // 3. Execution
+    const [totalResults, transactions] = await Promise.all([
+      PaymentTransactionModel.countDocuments(filters),
+      PaymentTransactionModel.find(filters)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    // 4. Map to List DTO (Redacted/Simplified)
+    const data = transactions.map(txn => ({
+      transactionId: txn.intentId, // Use intentId for consistency as external ref
+      projectId: txn.projectId?.toString(),
+      type: txn.type,
+      amount: txn.amount,
+      currency: txn.currency,
+      status: txn.status,
+      createdAt: txn.createdAt?.toISOString() || new Date().toISOString(),
+    }));
+
+    return {
+      meta: {
+        page: pageNum,
+        per_page: limit,
+        total: totalResults,
+        total_pages: Math.ceil(totalResults / limit),
+      },
+      data,
+    };
+  }
+
+  /**
+   * Retrieves detailed transaction information with strict self-or-admin access.
+   * @param transactionId - Transaction ID (intentId)
+   * @param requesterId - User ID of requester
+   * @param requesterRole - Role of requester
+   * @returns Transaction details
+   * @throws {Error} - 'TransactionNotFound', 'PermissionDenied'
+   */
+  public async getTransactionDetails(
+    transactionId: string,
+    requesterId: string,
+    requesterRole: IAuthUser['role']
+  ): Promise<{
+    transactionId: string;
+    projectId?: string;
+    milestoneId?: string;
+    type: string;
+    amount: number;
+    currency: string;
+    status: string;
+    provider: string;
+    providerPaymentIntentId?: string;
+    providerPaymentId?: string;
+    createdAt?: string;
+    updatedAt?: string;
+  }> {
+    const transaction = await PaymentTransactionModel.findOne({ intentId: transactionId }).lean();
+    if (!transaction) {
+      throw new Error('TransactionNotFound');
+    }
+
+    // 1. Authorization Check (CRITICAL)
+    const isPayer = transaction.payerId.toString() === requesterId;
+    const isAdmin = requesterRole === 'admin';
+
+    if (!isPayer && !isAdmin) {
+      // Security by obscurity: return 404/403 for unauthorized access
+      throw new Error('PermissionDenied');
+    }
+
+    // 2. Map to DTO (Full details for the authorized viewer)
+    return {
+      transactionId: transaction.intentId,
+      projectId: transaction.projectId?.toString(),
+      milestoneId: transaction.milestoneId?.toString(),
+      type: transaction.type,
+      amount: transaction.amount,
+      currency: transaction.currency,
+      status: transaction.status,
+      provider: transaction.provider,
+      providerPaymentIntentId: transaction.providerPaymentIntentId,
+      providerPaymentId: transaction.providerPaymentId,
+      createdAt: transaction.createdAt?.toISOString(),
+      updatedAt: transaction.updatedAt?.toISOString(),
+    };
+  }
 }
 

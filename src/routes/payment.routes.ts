@@ -8,6 +8,10 @@ import {
   refundEscrowController,
   releaseEscrowValidation,
   refundEscrowValidation,
+  listTransactionsController,
+  getTransactionDetailsController,
+  listTransactionsValidation,
+  transactionIdParamValidation,
 } from '../controllers/payment.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -48,6 +52,19 @@ router.post(
   // NOTE: Owner/Admin permission is checked in the service (Task 36.1)
   refundEscrowValidation,
   refundEscrowController
+);
+
+// --- Ledger Query Endpoints (Task 37) ---
+
+// GET /payments/transactions - List financial transactions (Self/Admin only)
+router.get('/transactions', authenticate, listTransactionsValidation, listTransactionsController);
+
+// GET /payments/transactions/:transactionId - Get transaction details (Self/Admin only)
+router.get(
+  '/transactions/:transactionId',
+  authenticate,
+  transactionIdParamValidation,
+  getTransactionDetailsController
 );
 
 export default router;
