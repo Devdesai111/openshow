@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { body, validationResult } from 'express-validator';
+import { body, param, validationResult } from 'express-validator';
 import { NotificationService } from '../services/notification.service';
 import { NotificationTemplateModel } from '../models/notificationTemplate.model';
 import { ResponseBuilder } from '../utils/response-builder';
@@ -85,6 +85,159 @@ export const sendNotificationController = async (req: Request, res: Response): P
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error queuing notification.',
+      500
+    );
+  }
+};
+
+// --- Validation Middleware ---
+
+export const templateBaseValidation = [
+  body('templateId').isString().isLength({ min: 3 }).withMessage('Template ID is required (min 3 characters).'),
+  body('name').isString().isLength({ min: 1 }).withMessage('Template name is required.'),
+  body('description').optional().isString().withMessage('Description must be a string.'),
+  body('channels').isArray({ min: 1 }).withMessage('At least one channel is required.'),
+  body('channels.*').isIn(['in_app', 'email', 'push', 'webhook']).withMessage('Invalid channel type.'),
+  body('contentTemplate').isObject().withMessage('Content template is required.'),
+  body('requiredVariables').isArray().withMessage('Required variables must be an array.'),
+  body('defaultLocale').optional().isString().withMessage('Default locale must be a string.'),
+];
+
+export const templateIdParamValidation = [
+  param('templateId').isString().withMessage('Template ID is required.'),
+];
+
+export const previewTemplateValidation = [
+  body('templateId').isString().withMessage('Template ID is required.'),
+  body('variables').isObject().withMessage('Variables must be an object.'),
+];
+
+// --- Admin Template Controllers ---
+
+/** Creates a new template. POST /notifications/templates */
+export const createTemplateController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const savedTemplate = await notificationService.createTemplate(req.body);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        templateId: savedTemplate.templateId,
+        version: savedTemplate.version,
+        createdAt: savedTemplate.createdAt?.toISOString() || new Date().toISOString(),
+      },
+      201
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'TemplateIDConflict') {
+      return ResponseBuilder.error(res, ErrorCode.CONFLICT, 'Template ID already exists.', 409);
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error creating template.',
+      500
+    );
+  }
+};
+
+/** Previews a rendered template. POST /notifications/templates/preview */
+export const previewTemplateController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { templateId, variables } = req.body;
+    const renderedContent = await notificationService.previewTemplate(templateId, variables);
+
+    return ResponseBuilder.success(res, renderedContent, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'TemplateNotFound') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.NOT_FOUND,
+        'Template not found or is inactive.',
+        404
+      );
+    }
+    if (errorMessage.startsWith('VariableMissing')) {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.VALIDATION_ERROR,
+        `Template rendering failed: ${errorMessage}`,
+        422
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error rendering preview.',
+      500
+    );
+  }
+};
+
+/** Deletes/Deactivates a template. DELETE /notifications/templates/:templateId */
+export const deleteTemplateController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { templateId } = req.params;
+    if (!templateId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Template ID is required.', 400);
+    }
+
+    await notificationService.deleteTemplate(templateId);
+
+    return ResponseBuilder.noContent(res);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'TemplateNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Template not found.', 404);
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error deleting template.',
       500
     );
   }

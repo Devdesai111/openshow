@@ -1,7 +1,7 @@
 import { Schema, model, Types } from 'mongoose';
 
 // Defines the structure of content parts required for a template's channels
-interface IChannelParts {
+export interface IChannelParts {
   title: string;
   body: string;
   metadata?: Record<string, unknown>;

@@ -1,10 +1,20 @@
 import { Router } from 'express';
-import { sendNotificationController, sendNotificationValidation, initialTemplateCreationController } from '../controllers/notification.controller';
+import {
+  sendNotificationController,
+  sendNotificationValidation,
+  createTemplateController,
+  previewTemplateController,
+  deleteTemplateController,
+  templateBaseValidation,
+  templateIdParamValidation,
+  previewTemplateValidation,
+} from '../controllers/notification.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../config/permissions';
 
 const router = Router();
+const adminAccess = [PERMISSIONS.ADMIN_DASHBOARD]; // Admin/System access for template management
 
 // --- Internal/Service-to-Service Endpoints ---
 
@@ -19,8 +29,28 @@ router.post(
   sendNotificationController
 );
 
-// POST /notifications/templates - Admin endpoint to create initial templates (Placeholder for later Task 46)
-router.post('/templates', initialTemplateCreationController);
+// --- Admin Template Management Endpoints (Task 46) ---
+
+// POST /notifications/templates - Create new template
+router.post('/templates', authenticate, authorize(adminAccess), templateBaseValidation, createTemplateController);
+
+// POST /notifications/templates/preview - Preview template
+router.post(
+  '/templates/preview',
+  authenticate,
+  authorize(adminAccess),
+  previewTemplateValidation,
+  previewTemplateController
+);
+
+// DELETE /notifications/templates/:templateId - Delete/Deactivate template
+router.delete(
+  '/templates/:templateId',
+  authenticate,
+  authorize(adminAccess),
+  templateIdParamValidation,
+  deleteTemplateController
+);
 
 // ... (Future Task 50 endpoints for user-facing lists will be here) ...
 

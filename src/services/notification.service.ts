@@ -107,4 +107,131 @@ export class NotificationService {
 
     return savedNotification.toObject() as INotification;
   }
+
+  // --- Admin Template Management ---
+
+  /**
+   * Creates a new notification template (Admin/System use).
+   * @param data - Template data
+   * @returns Created template
+   * @throws {Error} - 'TemplateIDConflict'
+   */
+  public async createTemplate(data: {
+    templateId: string;
+    name: string;
+    description?: string;
+    channels: ('in_app' | 'email' | 'push' | 'webhook')[];
+    contentTemplate: INotificationTemplate['contentTemplate'];
+    requiredVariables: string[];
+    defaultLocale?: string;
+  }): Promise<INotificationTemplate> {
+    const existing = await NotificationTemplateModel.findOne({ templateId: data.templateId });
+    if (existing) {
+      throw new Error('TemplateIDConflict');
+    }
+
+    // PRODUCTION: Full template object validation would occur here
+    const newTemplate = new NotificationTemplateModel({
+      ...data,
+      version: 1,
+      active: true,
+      defaultLocale: data.defaultLocale || 'en',
+    });
+
+    const savedTemplate = await newTemplate.save();
+    return savedTemplate.toObject() as INotificationTemplate;
+  }
+
+  /**
+   * Updates an existing template, incrementing the version. (Soft deletion of old content)
+   * @param templateId - Template ID
+   * @param data - Update data
+   * @returns Updated template
+   * @throws {Error} - 'TemplateNotFound'
+   */
+  public async updateTemplate(
+    templateId: string,
+    data: Partial<{
+      name: string;
+      description: string;
+      channels: ('in_app' | 'email' | 'push' | 'webhook')[];
+      contentTemplate: INotificationTemplate['contentTemplate'];
+      requiredVariables: string[];
+      defaultLocale: string;
+    }>
+  ): Promise<INotificationTemplate> {
+    const template = await NotificationTemplateModel.findOne({ templateId });
+    if (!template) {
+      throw new Error('TemplateNotFound');
+    }
+
+    // Increment version on update
+    const newVersion = template.version + 1;
+
+    const updatedTemplate = await NotificationTemplateModel.findOneAndUpdate(
+      { templateId },
+      {
+        $set: { ...data, version: newVersion, updatedAt: new Date() },
+      },
+      { new: true }
+    );
+
+    if (!updatedTemplate) {
+      throw new Error('TemplateNotFound');
+    }
+
+    return updatedTemplate.toObject() as INotificationTemplate;
+  }
+
+  /**
+   * Deletes/Deactivates a template.
+   * @param templateId - Template ID
+   * @throws {Error} - 'TemplateNotFound'
+   */
+  public async deleteTemplate(templateId: string): Promise<void> {
+    const result = await NotificationTemplateModel.updateOne(
+      { templateId },
+      { $set: { active: false, updatedAt: new Date() } }
+    );
+    if (result.matchedCount === 0) {
+      throw new Error('TemplateNotFound');
+    }
+  }
+
+  /**
+   * Previews a rendered template with mock variables.
+   * @param templateId - Template ID
+   * @param variables - Variables for rendering
+   * @returns Rendered content for each channel
+   * @throws {Error} - 'TemplateNotFound' | 'VariableMissing: {key}'
+   */
+  public async previewTemplate(templateId: string, variables: Record<string, string>): Promise<Record<string, any>> {
+    const template = (await NotificationTemplateModel.findOne({ templateId, active: true }).lean()) as
+      | INotificationTemplate
+      | null;
+    if (!template) {
+      throw new Error('TemplateNotFound');
+    }
+
+    const renderedContent: Record<string, any> = {};
+
+    // 1. Check for Missing Variables
+    template.requiredVariables.forEach(key => {
+      if (!Object.prototype.hasOwnProperty.call(variables, key)) {
+        throw new Error(`VariableMissing: ${key}`);
+      }
+    });
+
+    // 2. Render content for each channel (using the renderContent utility from Task 11 logic)
+    for (const channel of template.channels) {
+      const contentTemplate = template.contentTemplate[channel];
+      if (contentTemplate) {
+        // Reusing the render logic from Task 11 (Handlebars utility)
+        const rendered = this.renderContent(contentTemplate as Record<string, unknown>, variables);
+        renderedContent[channel] = rendered;
+      }
+    }
+
+    return renderedContent;
+  }
 }
