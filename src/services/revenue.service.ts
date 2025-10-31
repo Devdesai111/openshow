@@ -315,5 +315,110 @@ export class RevenueService {
       processedAt: item.processedAt?.toISOString(),
     };
   }
+
+  /**
+   * Admin function to list ALL payout batches.
+   * @param queryParams - Query parameters (status, projectId, page, per_page)
+   * @returns Paginated list of all payout batches
+   */
+  public async listAllPayoutBatches(queryParams: {
+    status?: string;
+    projectId?: string;
+    page?: number | string;
+    per_page?: number | string;
+  }): Promise<{
+    meta: {
+      page: number;
+      per_page: number;
+      total: number;
+      total_pages: number;
+    };
+    data: Array<{
+      batchId: string;
+      escrowId: string;
+      projectId?: string;
+      milestoneId?: string;
+      scheduledBy: string;
+      currency: string;
+      totalNet: number;
+      status: string;
+      items: Array<{
+        payoutItemId?: string;
+        userId: string;
+        amount: number;
+        fees: number;
+        taxWithheld: number;
+        netAmount: number;
+        status: string;
+        providerPayoutId?: string;
+        failureReason?: string;
+        attempts: number;
+        processedAt?: string;
+      }>;
+      createdAt: string;
+      updatedAt?: string;
+    }>;
+  }> {
+    const { status, projectId, page = 1, per_page = 20 } = queryParams;
+    const limit = typeof per_page === 'number' ? per_page : parseInt(per_page, 10);
+    const pageNum = typeof page === 'number' ? page : parseInt(page, 10);
+    const skip = (pageNum - 1) * limit;
+
+    const filters: Record<string, any> = {};
+    if (status) {
+      filters.status = status;
+    }
+    if (projectId) {
+      filters.projectId = new Types.ObjectId(projectId);
+    }
+
+    // Execution
+    const [totalResults, batches] = await Promise.all([
+      PayoutBatchModel.countDocuments(filters),
+      PayoutBatchModel.find(filters)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    // Map to Admin DTO (includes full items array)
+    const data = batches.map(batch => ({
+      batchId: batch.batchId,
+      escrowId: batch.escrowId.toString(),
+      projectId: batch.projectId?.toString(),
+      milestoneId: batch.milestoneId?.toString(),
+      scheduledBy: batch.scheduledBy.toString(),
+      currency: batch.currency,
+      totalNet: batch.totalNet,
+      status: batch.status,
+      // All items included in the batch for full oversight
+      items: batch.items.map(item => ({
+        payoutItemId: item._id?.toString(),
+        userId: item.userId.toString(),
+        amount: item.amount,
+        fees: item.fees,
+        taxWithheld: item.taxWithheld,
+        netAmount: item.netAmount,
+        status: item.status,
+        providerPayoutId: item.providerPayoutId,
+        failureReason: item.failureReason,
+        attempts: item.attempts,
+        processedAt: item.processedAt?.toISOString(),
+      })),
+      createdAt: batch.createdAt?.toISOString() || new Date().toISOString(),
+      updatedAt: batch.updatedAt?.toISOString(),
+    }));
+
+    return {
+      meta: {
+        page: pageNum,
+        per_page: limit,
+        total: totalResults,
+        total_pages: Math.ceil(totalResults / limit),
+      },
+      data,
+    };
+  }
 }
 

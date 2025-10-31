@@ -576,5 +576,104 @@ export class PaymentService {
       updatedAt: transaction.updatedAt?.toISOString(),
     };
   }
+
+  /**
+   * Admin function to list ALL financial transactions in the ledger.
+   * @param queryParams - Query parameters (from, to, status, provider, page, per_page)
+   * @returns Paginated list of all transactions
+   */
+  public async listAllLedgerTransactions(queryParams: {
+    from?: string;
+    to?: string;
+    status?: string;
+    provider?: string;
+    page?: number | string;
+    per_page?: number | string;
+  }): Promise<{
+    meta: {
+      page: number;
+      per_page: number;
+      total: number;
+      total_pages: number;
+    };
+    data: Array<{
+      transactionId: string;
+      payerId: string;
+      projectId?: string;
+      milestoneId?: string;
+      type: string;
+      amount: number;
+      currency: string;
+      status: string;
+      provider: string;
+      providerPaymentIntentId?: string;
+      providerPaymentId?: string;
+      createdAt: string;
+      updatedAt?: string;
+    }>;
+  }> {
+    const { from, to, status, provider, page = 1, per_page = 20 } = queryParams;
+    const limit = typeof per_page === 'number' ? per_page : parseInt(per_page, 10);
+    const pageNum = typeof page === 'number' ? page : parseInt(page, 10);
+    const skip = (pageNum - 1) * limit;
+
+    const filters: Record<string, any> = {};
+
+    // Date Range Filtering (CRITICAL for ledger audit)
+    if (from || to) {
+      filters.createdAt = {} as any;
+      if (from) {
+        filters.createdAt.$gte = new Date(from);
+      }
+      if (to) {
+        filters.createdAt.$lte = new Date(to);
+      }
+    }
+
+    // Additional Filters
+    if (status) {
+      filters.status = status;
+    }
+    if (provider) {
+      filters.provider = provider;
+    }
+
+    // Execution
+    const [totalResults, transactions] = await Promise.all([
+      PaymentTransactionModel.countDocuments(filters),
+      PaymentTransactionModel.find(filters)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    // Map to full Admin DTO (all details except internal Mongo IDs/secrets)
+    const data = transactions.map(txn => ({
+      transactionId: txn.intentId,
+      payerId: txn.payerId.toString(),
+      projectId: txn.projectId?.toString(),
+      milestoneId: txn.milestoneId?.toString(),
+      type: txn.type,
+      amount: txn.amount,
+      currency: txn.currency,
+      status: txn.status,
+      provider: txn.provider,
+      providerPaymentIntentId: txn.providerPaymentIntentId,
+      providerPaymentId: txn.providerPaymentId,
+      createdAt: txn.createdAt?.toISOString() || new Date().toISOString(),
+      updatedAt: txn.updatedAt?.toISOString(),
+    }));
+
+    return {
+      meta: {
+        page: pageNum,
+        per_page: limit,
+        total: totalResults,
+        total_pages: Math.ceil(totalResults / limit),
+      },
+      data,
+    };
+  }
 }
 
