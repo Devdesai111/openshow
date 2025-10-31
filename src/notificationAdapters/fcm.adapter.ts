@@ -7,7 +7,7 @@ export class FCMAdapter implements IPushAdapter {
 
   public async sendPush(notifications: IPushNotificationDTO[]): Promise<IPushSendResponseDTO[]> {
     // PRODUCTION: Use Firebase Admin SDK for batch sending
-    return notifications.map((n, index) => ({
+    return notifications.map((_n, index) => ({
       providerMessageId: `fcm_msg_${crypto.randomBytes(6).toString('hex')}_${index}`,
       status: 'success' as const,
     }));

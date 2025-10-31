@@ -4,10 +4,16 @@ import { Types } from 'mongoose';
 import { INotification, NotificationModel } from '../models/notification.model';
 import { INotificationTemplate, NotificationTemplateModel } from '../models/notificationTemplate.model';
 import { UserInboxModel } from '../models/userNotification.model';
-import { IEmailAdapter, IEmailSendDTO } from '../notificationAdapters/email.interface';
+import { IDispatchAttempt, DispatchAttemptModel } from '../models/dispatchAttempt.model';
+import { IEmailAdapter, IEmailSendDTO, IEmailSendResponseDTO } from '../notificationAdapters/email.interface';
+import { IPushAdapter, IPushSendResponseDTO } from '../notificationAdapters/push.interface';
 import { SendGridAdapter } from '../notificationAdapters/sendgrid.adapter';
+import { FCMAdapter } from '../notificationAdapters/fcm.adapter';
+import { UserModel, IPushToken } from '../models/user.model';
+import { getExponentialBackoffDelay, isRetryAllowed } from '../utils/retryPolicy';
 
 const emailAdapter: IEmailAdapter = new SendGridAdapter(); // Assume SendGrid is the active provider
+const pushAdapter: IPushAdapter = new FCMAdapter(); // Assume FCM is the active provider
 
 // DTO for incoming template-based send request
 interface ITemplateSendRequest {
@@ -77,7 +83,13 @@ export class NotificationService {
 
     // 3. Render Content Snapshot
     const contentSnapshot: INotification['content'] = {};
-    for (const channel of template.channels) {
+    const channelsToRender = new Set(template.channels);
+    // Ensure in_app is rendered if push is in channels (push uses in_app content)
+    if (channelsToRender.has('push') && !channelsToRender.has('in_app') && template.contentTemplate.in_app) {
+      channelsToRender.add('in_app');
+    }
+    
+    for (const channel of channelsToRender) {
       if (template.contentTemplate[channel]) {
         const rendered = this.renderContent(
           template.contentTemplate[channel] as Record<string, unknown>,
@@ -445,5 +457,153 @@ export class NotificationService {
         }
       }
     }
+  }
+
+  // --- Notification Dispatch Logic ---
+
+  /**
+   * Worker/Job entry point to process a single notification across all channels.
+   * @param notificationId - Notification ID to dispatch
+   * @returns Updated notification
+   * @throws {Error} - 'NotificationNotFound', 'NotificationNotQueued'
+   */
+  public async dispatchNotification(notificationId: string): Promise<INotification> {
+    const notification = await NotificationModel.findById(new Types.ObjectId(notificationId));
+    if (!notification) {
+      throw new Error('NotificationNotFound');
+    }
+    if (notification.status !== 'queued') {
+      throw new Error('NotificationNotQueued');
+    }
+
+    let overallFailure = false;
+    let hasAnySuccess = false;
+
+    // Update master status to processing
+    notification.status = 'processing';
+    await notification.save();
+
+    // 1. Iterate through Recipients and Channels
+    for (const recipient of notification.recipients) {
+      if (!recipient.userId) {
+        continue; // Skip recipients without userId
+      }
+
+      const userId = recipient.userId.toString();
+
+      for (const channel of notification.channels) {
+        let sendResult: IEmailSendResponseDTO | IPushSendResponseDTO | undefined;
+        let attempt: Partial<IDispatchAttempt> = {
+          notificationRef: notification._id!,
+          recipientUserId: recipient.userId,
+          channel,
+          provider: 'system',
+          attemptNumber: 1,
+        };
+
+        try {
+          // 2. DISPATCH LOGIC (Channel-specific)
+          if (channel === 'email' && recipient.email) {
+            sendResult = await this.sendEmailNotification(recipient.email, notification.content, notificationId);
+            attempt.provider = emailAdapter.providerName;
+            attempt.status = sendResult.status === 'sent' || sendResult.status === 'pending' ? 'success' : 'pending';
+            attempt.providerReferenceId = sendResult.providerMessageId;
+            if (attempt.status === 'success') {
+              hasAnySuccess = true;
+            }
+          } else if (channel === 'push') {
+            // Look up all user's tokens
+            const user = await UserModel.findById(recipient.userId).select('pushTokens').lean() as { pushTokens: IPushToken[] } | null;
+            const tokens = user?.pushTokens?.map(t => t.token) || [];
+
+            if (tokens.length > 0) {
+              // Batch send: create push notifications for all tokens
+              const pushPayloads = tokens.map(token => ({
+                token,
+                title: notification.content.in_app?.title || 'Notification',
+                body: notification.content.in_app?.body || '',
+                data: {},
+              }));
+
+              const pushResults = await pushAdapter.sendPush(pushPayloads);
+              sendResult = pushResults[0]; // Use first result for attempt record
+
+              // Check results for token invalidation
+              for (let i = 0; i < pushResults.length; i++) {
+                const result = pushResults[i];
+                if (result && result.status === 'token_invalid') {
+                  // Remove invalid token from user's document
+                  await UserModel.updateOne(
+                    { _id: recipient.userId },
+                    { $pull: { pushTokens: { token: tokens[i] } } }
+                  );
+                  console.warn(`[Dispatch] Removed invalid push token for user ${userId}`);
+                }
+              }
+
+              attempt.provider = pushAdapter.providerName;
+              if (sendResult) {
+                attempt.status = sendResult.status === 'success' ? 'success' : 'failed';
+                attempt.providerReferenceId = sendResult.providerMessageId;
+
+                if (attempt.status === 'success') {
+                  hasAnySuccess = true;
+                } else if (sendResult.status === 'token_invalid') {
+                  attempt.status = 'permanent_failed';
+                  attempt.error = { message: 'Invalid push token removed from user.' };
+                }
+              } else {
+                attempt.status = 'failed';
+                attempt.error = { message: 'No push result returned from adapter.' };
+              }
+            } else {
+              attempt.status = 'permanent_failed';
+              attempt.error = { message: 'No push tokens found for user.' };
+            }
+          } else if (channel === 'in_app') {
+            // In-app is handled by Task 47 (UserInbox creation)
+            // Just mark as success since inbox entry was created during sendTemplateNotification
+            attempt.status = 'success';
+            attempt.provider = 'system';
+            hasAnySuccess = true;
+          }
+          // NOTE: webhook channel is handled separately (Task 51)
+        } catch (e: unknown) {
+          const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+          // Transient failure (e.g., network error to PSP)
+          attempt.status = 'failed';
+          attempt.error = { message: errorMessage };
+          overallFailure = true;
+        } finally {
+          // 3. Record Audit Attempt
+          await DispatchAttemptModel.create(attempt);
+
+          // 4. Handle Retry/Token Invalidation
+          if (attempt.status === 'failed' && isRetryAllowed(attempt.attemptNumber || 1)) {
+            const delay = getExponentialBackoffDelay((attempt.attemptNumber || 1) + 1);
+            attempt.nextRetryAt = new Date(Date.now() + delay);
+            // PRODUCTION: Re-queue as a delayed job (Task 52/58)
+            // jobQueue.enqueueDelayedDispatch(notificationId, delay);
+            overallFailure = true; // Prevents overall status from becoming 'sent'
+          } else if (attempt.status === 'permanent_failed') {
+            // PRODUCTION: Trigger token invalidation/user suppression logic
+            overallFailure = true;
+          }
+        }
+      }
+    }
+
+    // 5. Final Status Update
+    if (hasAnySuccess && !overallFailure) {
+      notification.status = 'sent';
+    } else if (hasAnySuccess && overallFailure) {
+      notification.status = 'partial';
+    } else {
+      notification.status = 'failed'; // Final failure before escalation/DLQ (Task 60)
+    }
+
+    await notification.save();
+
+    return notification.toObject() as INotification;
   }
 }

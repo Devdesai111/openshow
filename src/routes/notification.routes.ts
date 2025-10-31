@@ -14,6 +14,8 @@ import {
   listNotificationsValidation,
   markReadValidation,
   emailWebhookController,
+  dispatchNotificationController,
+  dispatchValidation,
 } from '../controllers/notification.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -74,5 +76,16 @@ router.get('/unread-count', authenticate, getUnreadCountController);
 // POST /webhooks/notifications/email - Email Provider webhook receiver (Task 48)
 // NOTE: This route needs special raw body parsing middleware in the main Express config.
 router.post('/webhooks/notifications/email', emailWebhookController);
+
+// --- Admin Dispatch/Worker Test Endpoint (Task 50) ---
+
+// POST /notifications/:notificationId/dispatch - Manually trigger dispatch (Worker/Admin)
+router.post(
+  '/:notificationId/dispatch',
+  authenticate,
+  authorize(adminAccess),
+  dispatchValidation,
+  dispatchNotificationController
+);
 
 export default router;

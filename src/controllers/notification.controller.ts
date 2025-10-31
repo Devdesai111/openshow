@@ -396,3 +396,50 @@ export const emailWebhookController = async (req: Request, res: Response): Promi
     return;
   }
 };
+
+// --- Notification Dispatch Controller ---
+
+export const dispatchValidation = [param('notificationId').isMongoId().withMessage('Invalid Notification ID format.')];
+
+/** Manually triggers dispatch for a single notification (Admin/Test Use). POST /notifications/:id/dispatch */
+export const dispatchNotificationController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { notificationId } = req.params;
+    if (!notificationId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Notification ID is required.', 400);
+    }
+
+    const updatedNotification = await notificationService.dispatchNotification(notificationId);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        notificationId: updatedNotification._id!.toString(),
+        status: updatedNotification.status,
+        message: `Dispatch complete. Final status: ${updatedNotification.status}.`,
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMessage === 'NotificationNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Notification not found.', 404);
+    }
+    if (errorMessage === 'NotificationNotQueued') {
+      return ResponseBuilder.error(res, ErrorCode.CONFLICT, 'Notification must be in "queued" status to dispatch.', 409);
+    }
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error during dispatch.', 500);
+  }
+};
