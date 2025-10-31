@@ -14,6 +14,14 @@ export interface ITwoFA {
   enabledAt?: Date;
 }
 
+// Defines a registered push token and its device association
+export interface IPushToken {
+  token: string;
+  deviceId: string; // Unique ID per device (helps manage multiple tokens)
+  provider: 'fcm' | 'apns' | 'web';
+  lastUsed: Date;
+}
+
 // Define main User interface
 export interface IUser {
   _id?: Types.ObjectId;
@@ -25,6 +33,7 @@ export interface IUser {
   status: 'active' | 'pending' | 'suspended' | 'deleted';
   socialAccounts: ISocialAccount[];
   twoFA: ITwoFA;
+  pushTokens: IPushToken[]; // New field for push tokens
   lastSeenAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
@@ -49,6 +58,16 @@ const TwoFASchema = new Schema<ITwoFA>(
   { _id: false }
 );
 
+const PushTokenSchema = new Schema<IPushToken>(
+  {
+    token: { type: String, required: true },
+    deviceId: { type: String, required: true },
+    provider: { type: String, enum: ['fcm', 'apns', 'web'], required: true },
+    lastUsed: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const UserSchema = new Schema<IUser>(
   {
     email: { type: String, required: true, unique: true, lowercase: true, index: true },
@@ -63,6 +82,7 @@ const UserSchema = new Schema<IUser>(
     },
     socialAccounts: { type: [SocialAccountSchema], default: [] },
     twoFA: { type: TwoFASchema, default: (): ITwoFA => ({ enabled: false }) },
+    pushTokens: { type: [PushTokenSchema], default: [] }, // Added pushTokens
     lastSeenAt: { type: Date },
   },
   { timestamps: true }

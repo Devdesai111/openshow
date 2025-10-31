@@ -1,5 +1,6 @@
 // src/services/userSettings.service.ts
 import { UserSettingsModel, IUserSettings, INotificationPrefs, IPayoutMethod } from '../models/userSettings.model';
+import { UserModel, IPushToken } from '../models/user.model';
 import { Types } from 'mongoose';
 
 // Default values for new user upsert
@@ -11,6 +12,13 @@ const DEFAULT_USER_SETTINGS: Omit<IUserSettings, '_id' | 'userId' | 'createdAt' 
 interface IUpdateSettingsDTO {
   notificationPrefs?: Partial<INotificationPrefs>;
   payoutMethod?: IPayoutMethod;
+}
+
+// DTO for incoming push token registration
+interface IPushTokenRegisterDTO {
+  token: string;
+  deviceId: string;
+  provider: IPushToken['provider'];
 }
 
 export class UserSettingsService {
@@ -93,6 +101,84 @@ export class UserSettingsService {
     console.warn(`[Event] User ${targetUserId} settings updated.`);
 
     return updatedSettings;
+  }
+
+  /**
+   * Registers a new push token for the authenticated user.
+   * @param requesterId - User ID of requester
+   * @param data - Push token registration data
+   * @throws {Error} - May throw database errors
+   */
+  public async registerPushToken(requesterId: string, data: IPushTokenRegisterDTO): Promise<void> {
+    const userId = new Types.ObjectId(requesterId);
+
+    // 1. Find existing token or device for update/upsert
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      throw new Error('UserNotFound');
+    }
+
+    const existingTokenIndex = user.pushTokens.findIndex(pt => pt.token === data.token);
+    const existingDeviceIndex = user.pushTokens.findIndex(pt => pt.deviceId === data.deviceId);
+
+    // 2. Prepare new token structure
+    const newToken: IPushToken = {
+      token: data.token,
+      deviceId: data.deviceId,
+      provider: data.provider,
+      lastUsed: new Date(),
+    };
+
+    if (existingTokenIndex >= 0) {
+      // Case 1: Token exists (e.g., re-registration/update) -> Update lastUsed
+      await UserModel.updateOne(
+        { _id: userId, 'pushTokens.token': data.token },
+        { $set: { 'pushTokens.$.lastUsed': new Date() } }
+      );
+    } else if (existingDeviceIndex >= 0) {
+      // Case 2: Device exists with OLD token -> Remove old token and add new one
+      await UserModel.updateOne(
+        { _id: userId },
+        { $pull: { pushTokens: { deviceId: data.deviceId } } }
+      );
+      await UserModel.updateOne({ _id: userId }, { $push: { pushTokens: newToken } });
+    } else {
+      // Case 3: Completely new token/device -> Push new token
+      await UserModel.updateOne({ _id: userId }, { $push: { pushTokens: newToken } });
+    }
+
+    // PRODUCTION: Emit 'user.pushToken.registered' event
+    console.warn(`[Event] User ${requesterId} registered push token for device ${data.deviceId}.`);
+  }
+
+  /**
+   * Deletes a specified push token (e.g., on app uninstall or logout).
+   * @param requesterId - User ID of requester
+   * @param token - Push token to delete
+   * @throws {Error} - 'TokenNotFound' if token doesn't exist
+   */
+  public async deletePushToken(requesterId: string, token: string): Promise<void> {
+    const userId = new Types.ObjectId(requesterId);
+
+    // Check if token exists first
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      throw new Error('UserNotFound');
+    }
+
+    const tokenExists = user.pushTokens.some(pt => pt.token === token);
+    if (!tokenExists) {
+      throw new Error('TokenNotFound');
+    }
+
+    // Atomic pull operation
+    await UserModel.updateOne(
+      { _id: userId },
+      { $pull: { pushTokens: { token: token } } }
+    );
+
+    // PRODUCTION: Emit 'user.pushToken.deleted' event
+    console.warn(`[Event] User ${requesterId} deleted push token.`);
   }
 }
 

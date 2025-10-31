@@ -32,6 +32,16 @@ export const settingsUpdateValidation = [
   body('payoutMethod.providerAccountId').optional().isString().withMessage('providerAccountId must be a string.'),
 ];
 
+export const pushTokenRegisterValidation = [
+  body('token').isString().withMessage('Push token is required.'),
+  body('deviceId').isString().withMessage('Device ID is required.'),
+  body('provider').isIn(['fcm', 'apns', 'web']).withMessage('Invalid provider type.'),
+];
+
+export const pushTokenDeleteValidation = [
+  body('token').isString().withMessage('Push token is required.'),
+];
+
 /** Retrieves user settings. GET /settings/:userId */
 export const getSettingsController = async (req: Request, res: Response): Promise<void> => {
   const errors = validationResult(req);
@@ -160,6 +170,99 @@ export const updateSettingsController = async (req: Request, res: Response): Pro
       'Internal server error updating settings.',
       500
     );
+  }
+};
+
+// --- Push Token Controllers (Self-Service) ---
+
+/** Registers a new push token. POST /settings/:userId/push-token */
+export const registerPushTokenController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  const { userId } = req.params;
+  if (!userId) {
+    return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'User ID is required.', 400);
+  }
+
+  // Self-service only check
+  if (userId !== requesterId && req.user?.role !== 'admin') {
+    return ResponseBuilder.error(res, ErrorCode.PERMISSION_DENIED, 'You can only manage your own push tokens.', 403);
+  }
+
+  try {
+    await userSettingsService.registerPushToken(requesterId, req.body);
+
+    // 200 OK on success/upsert
+    return ResponseBuilder.success(res, { status: 'ok', message: 'Push token registered successfully.' }, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMessage === 'UserNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'User not found.', 404);
+    }
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error registering push token.', 500);
+  }
+};
+
+/** Deletes a push token. DELETE /settings/:userId/push-token */
+export const deletePushTokenController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  const { userId } = req.params;
+  if (!userId) {
+    return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'User ID is required.', 400);
+  }
+
+  // Self-service only check
+  if (userId !== requesterId && req.user?.role !== 'admin') {
+    return ResponseBuilder.error(res, ErrorCode.PERMISSION_DENIED, 'You can only manage your own push tokens.', 403);
+  }
+
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Push token is required in body.', 400);
+    }
+
+    await userSettingsService.deletePushToken(requesterId, token);
+
+    // 204 No Content on successful deletion
+    return ResponseBuilder.noContent(res);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMessage === 'TokenNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Token not found for this user/device.', 404);
+    }
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error deleting push token.', 500);
   }
 };
 
