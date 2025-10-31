@@ -10,6 +10,8 @@ import {
   passwordResetRequestValidation,
   refreshController,
   meController,
+  logoutController,
+  enable2FAController,
 } from '../controllers/auth.controller';
 import { authenticate } from '../middleware/auth.middleware';
 
@@ -39,9 +41,15 @@ router.post('/refresh', refreshController);
 // --- Protected Endpoints ---
 
 // GET /auth/me - Get current user profile & roles (Task 4)
-router.get('/me', authenticate, meController); // Requires only authentication
+router.get('/me', authenticate, meController);
 
-// NOTE: Logout and other endpoints will be implemented in subsequent tasks.
+// POST /auth/logout - Revoke refresh token / logout (Task 5)
+router.post('/logout', authenticate, logoutController);
+
+// POST /auth/2fa/enable - Begin enable 2FA (TOTP) (Task 5)
+router.post('/2fa/enable', authenticate, enable2FAController);
+
+// NOTE: 2FA verification and other endpoints will be implemented in subsequent tasks.
 
 export default router;
 

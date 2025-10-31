@@ -3,9 +3,11 @@ import { compare, hash } from 'bcryptjs';
 import { sign } from 'jsonwebtoken';
 import { Types } from 'mongoose';
 import crypto from 'crypto';
+import * as speakeasy from 'speakeasy';
 import { UserModel, IUser } from '../models/user.model';
 import { AuthSessionModel } from '../models/authSession.model';
 import { PasswordResetModel } from '../models/passwordReset.model';
+import { TwoFATempModel } from '../models/twoFATemp.model';
 import { env } from '../config/env';
 
 // Token configuration
@@ -73,6 +75,21 @@ const saveRefreshToken = async (
 };
 
 // --- Mocks/Placeholders for External Services ---
+
+// Mock KMS or simple encryption utility for sensitive field storage
+class KMSEncryption {
+  public encrypt(data: string): string {
+    // PRODUCTION: Use actual KMS/Vault
+    return `encrypted:${data}`;
+  }
+  public decrypt(data: string): string {
+    return data.replace('encrypted:', '');
+  }
+}
+const kms = new KMSEncryption();
+
+const APP_NAME = 'OpenShow';
+const TEMP_SECRET_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // Mock OAuthProvider utility (in a production environment, this calls external Google/GitHub APIs)
 class OAuthProvider {
@@ -367,6 +384,84 @@ export class AuthService {
 
     // 4. Return user
     return user;
+  }
+
+  /**
+   * Revokes a specific refresh token session (Logout).
+   * @param refreshToken - The plain opaque refresh token.
+   * @throws {Error} - 'SessionNotFound'.
+   */
+  public async logout(refreshToken: string): Promise<void> {
+    if (!refreshToken) {
+      throw new Error('RefreshTokenRequired');
+    }
+
+    // Find the session matching the plain token (must check all hashes)
+    const sessions = await AuthSessionModel.find({});
+    let matchedSession = null;
+    for (const session of sessions) {
+      // ASYNC AWAIT: Use async hash comparison
+      const isMatch = await compare(refreshToken, session.refreshTokenHash);
+      if (isMatch) {
+        matchedSession = session;
+        break;
+      }
+    }
+
+    if (!matchedSession) {
+      throw new Error('SessionNotFound');
+    }
+
+    // Revoke the session (delete is cleaner than setting expiresAt=now)
+    await AuthSessionModel.deleteOne({ _id: matchedSession._id });
+
+    // PRODUCTION: Emit 'user.loggedOut' event for audit logging (Task 60)
+    console.warn(`[Event] User ${matchedSession.userId.toString()} logged out.`);
+  }
+
+  /**
+   * Starts the 2FA enrollment process by generating a secret and temporary enrollment ID.
+   * @throws {Error} - 'AlreadyEnabled' | 'UserNotFound'.
+   */
+  public async enable2FA(
+    userId: string,
+    email: string
+  ): Promise<{ tempSecretId: string; otpauthUrl: string; expiresAt: Date }> {
+    const user = (await UserModel.findById(new Types.ObjectId(userId))
+      .select('twoFA')
+      .lean()) as IUser | null;
+
+    if (!user || !user.twoFA) {
+      throw new Error('UserNotFound');
+    }
+    if (user.twoFA.enabled) {
+      throw new Error('AlreadyEnabled');
+    }
+
+    // 1. Generate the TOTP secret
+    const secret = speakeasy.generateSecret({
+      name: `${APP_NAME}:${email}`,
+      length: 20,
+    });
+
+    // 2. Encrypt the secret for temporary storage (SECURITY)
+    const tempSecretEncrypted = kms.encrypt(secret.base32);
+    const expiresAt = new Date(Date.now() + TEMP_SECRET_TTL_MS);
+
+    // 3. Store the temporary secret (awaiting verification in Task 6)
+    const tempRecord = new TwoFATempModel({
+      userId: new Types.ObjectId(userId),
+      tempSecretEncrypted,
+      expiresAt,
+    });
+    await tempRecord.save();
+
+    // 4. Return necessary data for client (otpauthUrl for QR code display)
+    return {
+      tempSecretId: tempRecord._id?.toString() || '',
+      otpauthUrl: secret.otpauth_url || '',
+      expiresAt,
+    };
   }
 }
 

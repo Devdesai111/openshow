@@ -385,3 +385,97 @@ export const meController = async (req: Request, res: Response): Promise<void> =
   }
 };
 
+/**
+ * Handles user logout. POST /auth/logout
+ */
+export const logoutController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Input Check
+  const refreshToken = req.body.refreshToken as string;
+
+  if (!refreshToken) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INVALID_INPUT,
+      'Refresh token is required in the body for revocation.',
+      400
+    );
+  }
+
+  try {
+    // 2. Service Call: Find and delete the session
+    await authService.logout(refreshToken);
+
+    // 3. Success (204 No Content - standard for successful delete)
+    res.status(204).send();
+  } catch (error: unknown) {
+    // 4. Error Handling
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'SessionNotFound') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.NOT_FOUND,
+        'Session not found or already revoked.',
+        400
+      );
+    }
+    // Fallback
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during logout.',
+      500
+    );
+  }
+};
+
+/**
+ * Handles 2FA enablement step 1 (secret generation). POST /auth/2fa/enable
+ */
+export const enable2FAController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Authorization check (via req.user from 'authenticate' middleware)
+  const userId = req.user?.sub;
+  const email = req.user?.email;
+
+  if (!userId || !email) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    // 2. Service Call: Generates secret and stores temporarily
+    const { tempSecretId, otpauthUrl, expiresAt } = await authService.enable2FA(userId, email);
+
+    // 3. Success (200 OK)
+    const responseData = {
+      tempSecretId,
+      otpauthUrl,
+      expiresAt: expiresAt.toISOString(),
+      message: 'Scan the QR code with your authenticator app. Verify in next step.',
+    };
+
+    return ResponseBuilder.success(res, responseData, 200);
+  } catch (error: unknown) {
+    // 4. Error Handling
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'AlreadyEnabled') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        '2FA is already enabled on this account.',
+        400
+      );
+    }
+    if (errorMessage === 'UserNotFound') {
+      return ResponseBuilder.notFound(res, 'User');
+    }
+    // Fallback
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during 2FA setup.',
+      500
+    );
+  }
+};
+
