@@ -26,6 +26,10 @@ export interface ICreatorProfile {
   availability: 'open' | 'busy' | 'invite-only';
   portfolioItems: IPortfolioItem[];
   verified: boolean;
+  verificationBadgeMeta?: {
+    verifiedAt: Date;
+    verifierId: Types.ObjectId;
+  };
   rating?: { average: number; count: number };
   stats?: { completedProjects: number };
   createdAt?: Date;
@@ -63,6 +67,10 @@ const CreatorProfileSchema = new Schema<ICreatorProfile>(
     },
     portfolioItems: { type: [PortfolioItemSchema], default: [] },
     verified: { type: Boolean, default: false, index: true },
+    verificationBadgeMeta: {
+      verifiedAt: { type: Date },
+      verifierId: { type: Schema.Types.ObjectId, ref: 'User' },
+    },
     rating: {
       average: { type: Number, default: 0 },
       count: { type: Number, default: 0 },
