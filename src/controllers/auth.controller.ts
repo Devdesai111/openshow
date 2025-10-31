@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { body, validationResult } from 'express-validator';
+import { body, param, validationResult } from 'express-validator';
 import { AuthService } from '../services/auth.service';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -33,6 +33,29 @@ export const passwordResetRequestValidation = [
   body('redirectUrl')
     .isURL({ require_tld: false })
     .withMessage('A valid redirect URL is required in the request.'),
+];
+
+export const verify2FAValidation = [
+  body('tempSecretId').isMongoId().withMessage('Invalid temporary secret ID.').bail(),
+  body('token')
+    .isNumeric()
+    .isLength({ min: 6, max: 6 })
+    .withMessage('Token must be a 6-digit number.'),
+];
+
+export const suspendUserValidation = [
+  param('userId').isMongoId().withMessage('Invalid User ID format.'),
+  body('reason').isString().isLength({ min: 10 }).withMessage('Reason must be at least 10 characters.'),
+  body('until')
+    .optional()
+    .isISO8601()
+    .toDate()
+    .withMessage('Until date must be a valid ISO 8601 format.'),
+];
+
+export const userParamValidation = [
+  // Reusable check for param userId
+  param('userId').isMongoId().withMessage('Invalid User ID format.'),
 ];
 
 // DTO for sanitized user data in response
@@ -474,6 +497,214 @@ export const enable2FAController = async (req: Request, res: Response): Promise<
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error during 2FA setup.',
+      500
+    );
+  }
+};
+
+/**
+ * Handles 2FA verification and finalization. POST /auth/2fa/verify
+ */
+export const verify2FAController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Input Validation
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? err.path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? err.value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { tempSecretId, token } = req.body;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      return ResponseBuilder.unauthorized(res, 'Authentication required');
+    }
+
+    // 2. Service Call
+    const enabledAt = await authService.verify2FA(tempSecretId, token, userId);
+
+    // 3. Success (200 OK)
+    const responseData = {
+      status: 'enabled',
+      enabledAt: enabledAt.toISOString(),
+    };
+
+    return ResponseBuilder.success(res, responseData, 200);
+  } catch (error: unknown) {
+    // 4. Error Handling
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'TokenInvalid') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.INVALID_INPUT,
+        'Invalid 2FA token provided.',
+        422
+      );
+    }
+    if (errorMessage === 'SecretNotFound' || errorMessage === 'SecretMismatch' || errorMessage === 'SecretExpired') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.NOT_FOUND,
+        '2FA enrollment session not found or expired.',
+        404
+      );
+    }
+    if (errorMessage === 'UserNotFound') {
+      return ResponseBuilder.notFound(res, 'User');
+    }
+    // Fallback
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during 2FA verification.',
+      500
+    );
+  }
+};
+
+/**
+ * Handles 2FA disabling. POST /auth/2fa/disable
+ */
+export const disable2FAController = async (req: Request, res: Response): Promise<void> => {
+  // NOTE: A real-world app requires password re-auth or TOTP confirmation here
+  const userId = req.user?.sub;
+
+  if (!userId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    await authService.disable2FA(userId);
+
+    const responseData = {
+      status: 'disabled',
+      disabledAt: new Date().toISOString(),
+    };
+
+    return ResponseBuilder.success(res, responseData, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'NotEnabled') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.INVALID_INPUT,
+        '2FA is not currently enabled for this account.',
+        400
+      );
+    }
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during 2FA disable.',
+      500
+    );
+  }
+};
+
+// --- Admin Controllers ---
+
+/**
+ * Admin Suspends a user. POST /auth/users/:userId/suspend
+ */
+export const suspendUserController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Input Validation
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? err.path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? err.value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const targetUserId = req.params.userId as string;
+    const { reason, until } = req.body;
+
+    // 2. Service Call
+    const updatedUser = await authService.suspendUser(targetUserId, reason, until);
+
+    // 3. Success (200 OK) - Use UserDTOMapper for consistent response
+    const responseData = {
+      userId: updatedUser._id?.toString(),
+      status: updatedUser.status,
+      reason: reason,
+      suspendedAt: new Date().toISOString(),
+      until: until?.toISOString() || null,
+    };
+
+    return ResponseBuilder.success(res, responseData, 200);
+  } catch (error: unknown) {
+    // 4. Error Handling
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'TargetUserNotFound') {
+      return ResponseBuilder.notFound(res, 'User');
+    }
+    // Fallback
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during suspension.',
+      500
+    );
+  }
+};
+
+/**
+ * Admin Unsuspends a user. POST /auth/users/:userId/unsuspend
+ */
+export const unsuspendUserController = async (req: Request, res: Response): Promise<void> => {
+  // 1. Input Validation
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? err.path : undefined,
+        reason: err.msg,
+      }))
+    );
+  }
+
+  try {
+    const targetUserId = req.params.userId as string;
+
+    // 2. Service Call
+    const updatedUser = await authService.unsuspendUser(targetUserId);
+
+    // 3. Success (200 OK)
+    const responseData = {
+      userId: updatedUser._id?.toString(),
+      status: updatedUser.status,
+      unsuspendedAt: new Date().toISOString(),
+    };
+
+    return ResponseBuilder.success(res, responseData, 200);
+  } catch (error: unknown) {
+    // 4. Error Handling
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'TargetUserNotFound') {
+      return ResponseBuilder.notFound(res, 'User');
+    }
+    // Fallback
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during unsuspension.',
       500
     );
   }

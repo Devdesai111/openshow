@@ -463,5 +463,115 @@ export class AuthService {
       expiresAt,
     };
   }
+
+  /**
+   * Verifies the TOTP code against the temporary secret and finalizes 2FA enrollment.
+   * @throws {Error} - 'SecretNotFound' | 'TokenInvalid' | 'SecretExpired'.
+   */
+  public async verify2FA(tempSecretId: string, token: string, userId: string): Promise<Date> {
+    // 1. Retrieve and validate the temporary secret
+    const tempRecord = await TwoFATempModel.findById(new Types.ObjectId(tempSecretId));
+
+    if (!tempRecord) {
+      throw new Error('SecretNotFound');
+    }
+    if (tempRecord.userId.toString() !== userId) {
+      throw new Error('SecretMismatch'); // Failsafe for security
+    }
+    if (tempRecord.expiresAt < new Date()) {
+      await TwoFATempModel.deleteOne({ _id: tempSecretId });
+      throw new Error('SecretExpired');
+    }
+
+    // 2. Decrypt the secret
+    const secretBase32 = kms.decrypt(tempRecord.tempSecretEncrypted);
+
+    // 3. Verify the TOTP token
+    const isVerified = speakeasy.totp.verify({
+      secret: secretBase32,
+      encoding: 'base32',
+      token: token,
+      window: 1, // Allow 1 step (30s) either side of the current time
+    });
+
+    if (!isVerified) {
+      throw new Error('TokenInvalid');
+    }
+
+    // 4. Finalize enrollment: Move secret to permanent user storage
+    const enabledAt = new Date();
+    const user = await UserModel.findById(new Types.ObjectId(userId));
+
+    if (!user) {
+      throw new Error('UserNotFound');
+    }
+
+    user.twoFA = {
+      enabled: true,
+      totpSecretEncrypted: tempRecord.tempSecretEncrypted, // Store encrypted permanent secret
+      enabledAt: enabledAt,
+    };
+    await user.save();
+
+    // 5. Clean up temporary record (important for security)
+    await TwoFATempModel.deleteOne({ _id: tempSecretId });
+
+    // PRODUCTION: Emit '2fa.enabled' event
+    console.warn(`[Event] User ${userId} successfully enabled 2FA.`);
+
+    return enabledAt;
+  }
+
+  /**
+   * Disables 2FA (requires re-auth/password/TOTP confirmation in a robust system).
+   */
+  public async disable2FA(userId: string): Promise<void> {
+    const user = await UserModel.findById(new Types.ObjectId(userId)).select('twoFA');
+
+    if (!user || !user.twoFA || !user.twoFA.enabled) {
+      throw new Error('NotEnabled');
+    }
+
+    user.twoFA.enabled = false;
+    user.twoFA.totpSecretEncrypted = undefined;
+    user.twoFA.enabledAt = undefined;
+    await user.save();
+
+    // PRODUCTION: Emit '2fa.disabled' event
+    console.warn(`[Event] User ${userId} successfully disabled 2FA.`);
+  }
+
+  // --- Admin Endpoints ---
+
+  /** Suspends a target user account. */
+  public async suspendUser(targetUserId: string, reason: string, until?: Date): Promise<IUser> {
+    const user = await UserModel.findById(new Types.ObjectId(targetUserId));
+    if (!user) {
+      throw new Error('TargetUserNotFound');
+    }
+
+    user.status = 'suspended';
+    // PRODUCTION: Store suspension metadata (reason, suspendedBy, until) in a separate log/collection
+    await user.save();
+
+    // PRODUCTION: Emit 'user.suspended' event
+    console.warn(`[Event] User ${targetUserId} suspended. Reason: ${reason}. Until: ${until?.toISOString() || 'indefinite'}`);
+    return user.toObject() as IUser;
+  }
+
+  /** Unsuspends a target user account. */
+  public async unsuspendUser(targetUserId: string): Promise<IUser> {
+    const user = await UserModel.findById(new Types.ObjectId(targetUserId));
+    if (!user) {
+      throw new Error('TargetUserNotFound');
+    }
+
+    user.status = 'active';
+    await user.save();
+
+    // PRODUCTION: Emit 'user.unsuspended' event
+    console.warn(`[Event] User ${targetUserId} unsuspended.`);
+    return user.toObject() as IUser;
+  }
 }
 
