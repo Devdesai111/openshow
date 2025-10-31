@@ -5,6 +5,7 @@ import { Types } from 'mongoose';
 import crypto from 'crypto';
 import { UserModel, IUser } from '../models/user.model';
 import { AuthSessionModel } from '../models/authSession.model';
+import { PasswordResetModel } from '../models/passwordReset.model';
 import { env } from '../config/env';
 
 // Token configuration
@@ -70,6 +71,46 @@ const saveRefreshToken = async (
   });
   await session.save();
 };
+
+// --- Mocks/Placeholders for External Services ---
+
+// Mock OAuthProvider utility (in a production environment, this calls external Google/GitHub APIs)
+class OAuthProvider {
+  // Mock successful validation and returns normalized user data
+  public async validateToken(
+    _provider: string,
+    token: string
+  ): Promise<{ providerId: string; email: string; fullName?: string }> {
+    if (token === 'invalid-token') {
+      throw new Error('Provider token validation failed.');
+    }
+    // In a real app, this verifies the token with the provider's API.
+    return {
+      providerId:
+        'prov_id_' + crypto.createHash('sha256').update(token).digest('hex').substring(0, 10),
+      email: 'oauth.user@example.com', // Placeholder
+      fullName: 'OAuth User',
+    };
+  }
+}
+
+// Mock NotificationService (in a real app, this is a separate service/module)
+class NotificationService {
+  public async sendPasswordResetEmail(
+    email: string,
+    token: string,
+    redirectUrl: string
+  ): Promise<void> {
+    // PRODUCTION: This would publish an event or call the Notifications Service API (Task 11)
+    console.warn(
+      `[Mock Notification] Sending reset email to ${email} with token: ${token} and link: ${redirectUrl}?token=${token}`
+    );
+    return;
+  }
+}
+
+const oauthProvider = new OAuthProvider();
+const notificationService = new NotificationService();
 
 export class AuthService {
   /**
@@ -162,6 +203,104 @@ export class AuthService {
     delete userObject.hashedPassword;
 
     return { ...tokenPair, user: userObject };
+  }
+
+  /**
+   * Handles OAuth login/signup flow.
+   * @throws {Error} - 'OAuthValidationFailed'.
+   */
+  public async oauthLogin(
+    data: {
+      provider: 'google' | 'github' | 'linkedin';
+      providerAccessToken: string;
+      role?: 'creator' | 'owner';
+    },
+    req: Request
+  ): Promise<ITokenPair & { user: IUser }> {
+    const { provider, providerAccessToken, role } = data;
+
+    // 1. Validate token with external provider (ASYNC)
+    const providerData = await oauthProvider.validateToken(provider, providerAccessToken);
+    const { providerId, email, fullName } = providerData;
+
+    // 2. Find existing user by social account or email
+    let user = await UserModel.findOne({
+      $or: [{ 'socialAccounts.providerId': providerId }, { email: email }],
+    }).select('+hashedPassword'); // Select hash to satisfy IUser type internally, even if it's null/undefined
+
+    if (!user) {
+      // 3. New User Signup
+      const newUser = new UserModel({
+        email,
+        role: role || 'creator',
+        fullName,
+        status: 'active',
+        socialAccounts: [{ provider, providerId, connectedAt: new Date() }],
+      });
+      user = await newUser.save();
+    } else {
+      // 4. Existing User Login/Account Linking
+
+      // Check for potential conflict: if found by email, but socialAccounts are different
+      const isLinked = user.socialAccounts.some(acc => acc.providerId === providerId);
+      if (!isLinked) {
+        // Link account if authenticated via email but logging in via new social provider
+        user.socialAccounts.push({ provider, providerId, connectedAt: new Date() });
+        await user.save();
+      }
+
+      user.lastSeenAt = new Date();
+      await user.save();
+    }
+
+    // 5. Generate tokens and save session
+    const tokenPair = generateTokens(user);
+    await saveRefreshToken(user._id as Types.ObjectId, tokenPair.refreshToken, req, true);
+
+    const userObject = user.toObject({ getters: true, virtuals: true }) as IUser;
+    delete userObject.hashedPassword;
+
+    return { ...tokenPair, user: userObject };
+  }
+
+  /**
+   * Initiates the password reset flow.
+   * Generates and stores a unique token, then schedules an email.
+   * @returns Always returns success to prevent user enumeration.
+   */
+  public async requestPasswordReset(data: {
+    email: string;
+    redirectUrl: string;
+  }): Promise<void> {
+    const { email, redirectUrl } = data;
+
+    // 1. Find user (don't throw if not found - SECURITY)
+    const user = (await UserModel.findOne({ email }).lean()) as IUser | null;
+
+    if (user) {
+      // 2. Generate secure, single-use token (Opaque string)
+      const plainToken = crypto.randomBytes(20).toString('hex');
+      const tokenHash = await hash(plainToken, 10); // Hash token for secure storage
+
+      // Set expiry: 1 hour (configurable)
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+      // 3. Invalidate any previous tokens for this user and store the new one
+      await PasswordResetModel.updateMany({ userId: user._id, isUsed: false }, { isUsed: true }); // Invalidate old tokens
+
+      const passwordReset = new PasswordResetModel({
+        userId: user._id,
+        tokenHash,
+        expiresAt,
+      });
+      await passwordReset.save();
+
+      // 4. Send email (Mocked service call)
+      await notificationService.sendPasswordResetEmail(email, plainToken, redirectUrl);
+    }
+
+    // 5. Return success regardless of whether the user exists (SECURITY)
+    return;
   }
 }
 
