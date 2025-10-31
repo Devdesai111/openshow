@@ -1,6 +1,6 @@
 // src/controllers/payment.controller.ts
 import { Request, Response } from 'express';
-import { body, validationResult } from 'express-validator';
+import { body, param, validationResult } from 'express-validator';
 import { PaymentService } from '../services/payment.service';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -160,6 +160,189 @@ export const webhookController = async (req: Request, res: Response): Promise<vo
       },
     });
     return;
+  }
+};
+
+// --- Escrow Validation Middleware ---
+
+export const escrowIdParamValidation = [
+  param('escrowId').isString().withMessage('Escrow ID is required.'),
+];
+
+export const releaseEscrowValidation = [
+  param('escrowId').isString().withMessage('Escrow ID is required.'),
+  body('releaseAmount').optional().isInt({ min: 1 }).toInt().withMessage('Release amount must be a positive integer.'),
+];
+
+export const refundEscrowValidation = [
+  param('escrowId').isString().withMessage('Escrow ID is required.'),
+  body('amount').isInt({ min: 1 }).toInt().withMessage('Refund amount is required and must be a positive integer.'),
+  body('reason').isString().isLength({ min: 10 }).withMessage('A reason for refund is required (minimum 10 characters).'),
+];
+
+// --- Escrow Release/Refund Controllers ---
+
+/** Releases funds from escrow. POST /payments/escrow/:escrowId/release */
+export const releaseEscrowController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { escrowId } = req.params;
+    if (!escrowId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Escrow ID is required', 400);
+    }
+    const result = await paymentService.releaseEscrow(escrowId, requesterId, requesterRole, req.body.releaseAmount);
+
+    // Success (200 OK)
+    return ResponseBuilder.success(
+      res,
+      {
+        escrowId,
+        status: 'release_initiated',
+        jobId: result.jobId,
+        message: 'Funds release confirmed and payout job scheduled.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied' || errorMessage === 'PermissionDeniedDisputed') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'Only the project owner or admin can authorize release.',
+        403
+      );
+    }
+    if (errorMessage === 'EscrowAlreadyProcessed') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Escrow is already released or refunded.',
+        409
+      );
+    }
+    if (errorMessage === 'EscrowNotFound') {
+      return ResponseBuilder.notFound(res, 'Escrow');
+    }
+    if (errorMessage === 'ReleaseAmountInvalid') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.VALIDATION_ERROR,
+        'Release amount exceeds the total escrow amount.',
+        422
+      );
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during fund release.',
+      500
+    );
+  }
+};
+
+/** Refunds escrowed funds. POST /payments/escrow/:escrowId/refund */
+export const refundEscrowController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  const requesterRole = req.user?.role;
+  if (!requesterId || !requesterRole) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const { escrowId } = req.params;
+    if (!escrowId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Escrow ID is required', 400);
+    }
+    const { amount, reason } = req.body;
+
+    const result = await paymentService.refundEscrow(escrowId, requesterId, requesterRole, amount, reason);
+
+    // Success (200 OK)
+    return ResponseBuilder.success(
+      res,
+      {
+        escrowId,
+        status: 'refund_initiated',
+        providerRefundId: result.providerRefundId,
+        message: 'Refund process initiated with PSP. Status will be updated via webhook.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'PermissionDenied') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'Only the project owner or admin can authorize refunds.',
+        403
+      );
+    }
+    if (errorMessage === 'EscrowAlreadyProcessed') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Escrow is already released or refunded.',
+        409
+      );
+    }
+    if (errorMessage === 'RefundAmountInvalid') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.VALIDATION_ERROR,
+        'Refund amount exceeds the total escrow amount.',
+        422
+      );
+    }
+    if (errorMessage === 'EscrowNotFound') {
+      return ResponseBuilder.notFound(res, 'Escrow');
+    }
+    if (errorMessage === 'ProjectNotFound') {
+      return ResponseBuilder.notFound(res, 'Project');
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during refund process.',
+      500
+    );
   }
 };
 
