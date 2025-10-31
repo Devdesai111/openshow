@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { connectDatabase } from './config/database';
 import { env } from './config/env';
+import authRoutes from './routes/auth.routes';
 
 const app: Application = express();
 
@@ -16,6 +17,9 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Routes
+app.use('/auth', authRoutes);
 
 // Start server
 async function startServer(): Promise<void> {
