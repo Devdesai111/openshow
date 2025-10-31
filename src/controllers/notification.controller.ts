@@ -443,3 +443,99 @@ export const dispatchNotificationController = async (req: Request, res: Response
     return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error during dispatch.', 500);
   }
 };
+
+// --- Webhook Subscription Validation ---
+
+export const subscriptionValidation = [
+  body('event').isString().isLength({ min: 5 }).withMessage('Event name is required (min 5 chars).'),
+  body('url').isURL({ protocols: ['https'], require_tld: false }).withMessage('URL must be a valid HTTPS URL.'),
+  body('secret').isString().isLength({ min: 16 }).withMessage('Secret is required (min 16 chars).'),
+];
+
+export const subscriptionUpdateValidation = [
+  body('event').optional().isString().withMessage('Event name must be a string.'),
+  body('url').optional().isURL({ protocols: ['https'], require_tld: false }).withMessage('URL must be a valid HTTPS URL.'),
+  body('secret').optional().isString().isLength({ min: 16 }).withMessage('Secret must be at least 16 characters.'),
+  body('status').optional().isIn(['active', 'inactive']).withMessage('Status must be active or inactive.'),
+];
+
+export const subscriptionIdValidation = [param('subscriptionId').isString().withMessage('Subscription ID is required.')];
+
+// --- Admin Webhook Subscription Controllers ---
+
+/** Creates a new webhook subscription. POST /webhook-subscriptions */
+export const createSubscriptionController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  const requesterId = req.user?.sub;
+  if (!requesterId) {
+    return ResponseBuilder.unauthorized(res, 'Authentication required');
+  }
+
+  try {
+    const result = await notificationService.createSubscription(requesterId, req.body);
+    return ResponseBuilder.success(res, result, 201);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error creating subscription.', 500);
+  }
+};
+
+/** Updates a webhook subscription. PUT /webhook-subscriptions/:subscriptionId */
+export const updateSubscriptionController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { subscriptionId } = req.params;
+    if (!subscriptionId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Subscription ID is required.', 400);
+    }
+
+    const result = await notificationService.updateSubscription(subscriptionId, req.body);
+    return ResponseBuilder.success(res, result, 200);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMessage === 'SubscriptionNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Subscription not found.', 404);
+    }
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error updating subscription.', 500);
+  }
+};
+
+/** Deletes a webhook subscription. DELETE /webhook-subscriptions/:subscriptionId */
+export const deleteSubscriptionController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { subscriptionId } = req.params;
+    if (!subscriptionId) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Subscription ID is required.', 400);
+    }
+
+    await notificationService.deleteSubscription(subscriptionId);
+    return ResponseBuilder.noContent(res);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (errorMessage === 'SubscriptionNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Subscription not found.', 404);
+    }
+    return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'Internal server error deleting subscription.', 500);
+  }
+};

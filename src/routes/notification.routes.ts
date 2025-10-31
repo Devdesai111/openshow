@@ -16,6 +16,12 @@ import {
   emailWebhookController,
   dispatchNotificationController,
   dispatchValidation,
+  createSubscriptionController,
+  updateSubscriptionController,
+  deleteSubscriptionController,
+  subscriptionValidation,
+  subscriptionUpdateValidation,
+  subscriptionIdValidation,
 } from '../controllers/notification.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -86,6 +92,36 @@ router.post(
   authorize(adminAccess),
   dispatchValidation,
   dispatchNotificationController
+);
+
+// --- Admin Webhook Subscriptions (Task 51) ---
+
+// POST /webhook-subscriptions - Create new subscription
+router.post(
+  '/webhook-subscriptions',
+  authenticate,
+  authorize(adminAccess),
+  subscriptionValidation,
+  createSubscriptionController
+);
+
+// PUT /webhook-subscriptions/:subscriptionId - Update subscription
+router.put(
+  '/webhook-subscriptions/:subscriptionId',
+  authenticate,
+  authorize(adminAccess),
+  subscriptionIdValidation,
+  subscriptionUpdateValidation,
+  updateSubscriptionController
+);
+
+// DELETE /webhook-subscriptions/:subscriptionId - Delete subscription
+router.delete(
+  '/webhook-subscriptions/:subscriptionId',
+  authenticate,
+  authorize(adminAccess),
+  subscriptionIdValidation,
+  deleteSubscriptionController
 );
 
 export default router;

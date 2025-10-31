@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import * as handlebars from 'handlebars';
 import { Types } from 'mongoose';
+import { hash } from 'bcryptjs';
 import { INotification, NotificationModel } from '../models/notification.model';
 import { INotificationTemplate, NotificationTemplateModel } from '../models/notificationTemplate.model';
 import { UserInboxModel } from '../models/userNotification.model';
@@ -11,6 +12,7 @@ import { SendGridAdapter } from '../notificationAdapters/sendgrid.adapter';
 import { FCMAdapter } from '../notificationAdapters/fcm.adapter';
 import { UserModel, IPushToken } from '../models/user.model';
 import { getExponentialBackoffDelay, isRetryAllowed } from '../utils/retryPolicy';
+import { IWebhookSubscription, WebhookSubscriptionModel } from '../models/webhookSubscription.model';
 
 const emailAdapter: IEmailAdapter = new SendGridAdapter(); // Assume SendGrid is the active provider
 const pushAdapter: IPushAdapter = new FCMAdapter(); // Assume FCM is the active provider
@@ -605,5 +607,96 @@ export class NotificationService {
     await notification.save();
 
     return notification.toObject() as INotification;
+  }
+
+  /**
+   * Creates a new webhook subscription.
+   * @param requesterId - The ID of the user creating the subscription
+   * @param data - Subscription data including event, url, and secret
+   * @returns Webhook subscription DTO (without secretHash)
+   */
+  public async createSubscription(requesterId: string, data: { event: string; url: string; secret: string }): Promise<Omit<IWebhookSubscription, 'secretHash'>> {
+    const { event, url, secret } = data;
+
+    // 1. Hash the secret (Security)
+    const secretHash = await hash(secret, 10);
+
+    // 2. Create Subscription
+    const newSubscription = new WebhookSubscriptionModel({
+      event,
+      url,
+      secretHash,
+      status: 'active',
+      createdBy: new Types.ObjectId(requesterId),
+    });
+    const savedSubscription = await newSubscription.save();
+
+    // PRODUCTION: Emit 'webhook.subscription.created' event
+
+    // 3. Map to DTO (Exclude sensitive secretHash)
+    const dto = savedSubscription.toObject() as IWebhookSubscription;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (dto as any).secretHash;
+
+    return dto;
+  }
+
+  /**
+   * Updates a webhook subscription (e.g., status, URL, or secret).
+   * @param subscriptionId - The subscription ID to update
+   * @param data - Partial update data
+   * @returns Updated webhook subscription DTO (without secretHash)
+   */
+  public async updateSubscription(
+    subscriptionId: string,
+    data: { event?: string; url?: string; secret?: string; status?: 'active' | 'inactive' }
+  ): Promise<Omit<IWebhookSubscription, 'secretHash'>> {
+    const update: Partial<IWebhookSubscription> = {};
+    if (data.event) update.event = data.event;
+    if (data.url) update.url = data.url;
+    if (data.status) update.status = data.status;
+
+    // Hash the secret if it is being updated
+    if (data.secret) {
+      update.secretHash = await hash(data.secret, 10);
+    }
+
+    const updatedSubscription = await WebhookSubscriptionModel.findOneAndUpdate(
+      { subscriptionId },
+      { $set: update },
+      { new: true }
+    );
+
+    if (!updatedSubscription) {
+      throw new Error('SubscriptionNotFound');
+    }
+
+    // Map to DTO (Exclude sensitive secretHash)
+    const dto = updatedSubscription.toObject() as IWebhookSubscription;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (dto as any).secretHash;
+
+    return dto;
+  }
+
+  /**
+   * Deletes a webhook subscription.
+   * @param subscriptionId - The subscription ID to delete
+   */
+  public async deleteSubscription(subscriptionId: string): Promise<void> {
+    const result = await WebhookSubscriptionModel.deleteOne({ subscriptionId });
+    if (result.deletedCount === 0) {
+      throw new Error('SubscriptionNotFound');
+    }
+  }
+
+  /**
+   * (Future Worker Logic) Retrieves all active subscriptions for a given event.
+   * @param event - The event name to query
+   * @returns Array of webhook subscriptions (includes secretHash for worker use)
+   */
+  public async getActiveSubscriptionsForEvent(event: string): Promise<IWebhookSubscription[]> {
+    const subscriptions = (await WebhookSubscriptionModel.find({ event, status: 'active' }).lean()) as IWebhookSubscription[];
+    return subscriptions;
   }
 }
