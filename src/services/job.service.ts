@@ -164,18 +164,20 @@ export class JobService {
             },
         };
 
-        if (nextAttempt > currentJob.maxAttempts) {
-            // Permanent failure: Move to DLQ
+        if (nextAttempt >= currentJob.maxAttempts) {
+            // Permanent failure: Move to DLQ (check against job-specific maxAttempts)
             updateFields.$set.status = 'dlq';
             // PRODUCTION: Trigger Admin Escalation
-            console.error(`[Job DLQ] Job ${jobId} failed after ${nextAttempt} attempts.`);
+            console.error(`[Job DLQ] Job ${jobId} failed after ${nextAttempt} attempts (max: ${currentJob.maxAttempts}).`);
         } else {
-            // Retry: Calculate next run time
+            // Retry: Calculate next run time (only if under job-specific maxAttempts)
             const delay = getExponentialBackoffDelay(nextAttempt);
+            // Note: getExponentialBackoffDelay may return -1 if attempt >= global MAX_ATTEMPTS (5),
+            // but we've already checked against job-specific maxAttempts above, so this should be safe
             if (delay === -1) {
-                // Max attempts reached
+                // Fallback: Max attempts reached (should not happen due to check above)
                 updateFields.$set.status = 'dlq';
-                console.error(`[Job DLQ] Job ${jobId} failed after max attempts.`);
+                console.error(`[Job DLQ] Job ${jobId} failed after max attempts (fallback check).`);
             } else {
                 updateFields.$set.status = 'queued';
                 updateFields.$set.nextRunAt = new Date(Date.now() + delay);
