@@ -12,6 +12,8 @@ import {
   listAdminJobsController,
   getJobStatsController,
   jobQueueValidation,
+  logAuditController,
+  logAuditValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -79,6 +81,17 @@ router.get(
   authenticate,
   authorize(financeAccess),
   getJobStatsController
+);
+
+// --- Admin Audit Log Endpoints (Task 60) ---
+
+// POST /admin/audit - Writes a new immutable log entry (Internal/System only)
+router.post(
+  '/audit',
+  authenticate,
+  authorize(financeAccess), // RBAC check: System/Admin access only
+  logAuditValidation,
+  logAuditController
 );
 
 // ... Future Admin endpoints (moderation, reconciliation, manual ops) go here ...

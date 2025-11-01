@@ -5,6 +5,7 @@ import { PaymentService } from '../services/payment.service';
 import { RevenueService } from '../services/revenue.service';
 import { DiscoveryService } from '../services/discovery.service';
 import { JobService } from '../services/job.service';
+import { AuditService } from '../services/audit.service';
 import { updateRankingWeights, IRankingWeights } from '../config/rankingWeights';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -13,6 +14,7 @@ const paymentService = new PaymentService();
 const revenueService = new RevenueService();
 const discoveryService = new DiscoveryService();
 const jobService = new JobService();
+const auditService = new AuditService();
 
 // --- Validation Middleware ---
 
@@ -314,13 +316,96 @@ export const listAdminJobsController = async (req: Request, res: Response): Prom
 export const getJobStatsController = async (_req: Request, res: Response): Promise<void> => {
   try {
     const stats = await jobService.getJobStats();
-    
+
     return ResponseBuilder.success(res, stats, 200);
   } catch (error: unknown) {
     return ResponseBuilder.error(
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error retrieving job statistics.',
+      500
+    );
+  }
+};
+
+// --- Validation Middleware (Audit Log) ---
+
+export const logAuditValidation = [
+  body('resourceType').isString().withMessage('Resource type is required.'),
+  body('action').isString().isLength({ min: 5 }).withMessage('Action is required (minimum 5 characters).'),
+  body('resourceId').optional().isMongoId().withMessage('Resource ID must be a valid Mongo ID.'),
+  body('actorId').optional().isMongoId().withMessage('Actor ID must be a valid Mongo ID.'),
+  body('details').isObject().withMessage('Details object is required.'),
+];
+
+// --- Admin Audit Controller ---
+
+/** Writes an immutable audit log entry. POST /audit */
+export const logAuditController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    if (!req.user || !req.user.sub) {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.UNAUTHORIZED,
+        'Authentication required.',
+        401
+      );
+    }
+
+    // Use authenticated system/admin ID as the default actor
+    const actorId = req.user.sub;
+    const actorRole = req.user.role;
+
+    // Service Call (Performs hashing and saves)
+    const savedLog = await auditService.logAuditEntry({
+      ...req.body,
+      actorId,
+      actorRole,
+      ip: req.ip,
+    });
+
+    // Success (201 Created)
+    return ResponseBuilder.success(
+      res,
+      {
+        auditId: savedLog.auditId,
+        resourceType: savedLog.resourceType,
+        action: savedLog.action,
+        hash: savedLog.hash,
+        timestamp: savedLog.timestamp.toISOString(),
+        previousHash: savedLog.previousHash,
+      },
+      201
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    // High likelihood of a concurrency/DB error during save (E11000 - unique hash collision)
+    if (errorMessage.includes('E11000') || errorMessage.includes('duplicate')) {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'Audit log hash collision detected. Retry may be required.',
+        409
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error saving immutable log.',
       500
     );
   }
