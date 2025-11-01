@@ -2,10 +2,15 @@
 import { Request, Response } from 'express';
 import { body, param, query, validationResult } from 'express-validator';
 import { PaymentService } from '../services/payment.service';
+import { AgreementService } from '../services/agreement.service';
+import { AuditService } from '../services/audit.service';
+import { webhookSecurity } from '../utils/webhookSecurity';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
 
 const paymentService = new PaymentService();
+const agreementService = new AgreementService();
+const auditService = new AuditService();
 
 // --- Validation Middleware ---
 
@@ -160,6 +165,80 @@ export const webhookController = async (req: Request, res: Response): Promise<vo
       },
     });
     return;
+  }
+};
+
+/** Unified receiver for all external provider webhooks. POST /webhooks/provider/:name */
+export const unifiedWebhookController = async (req: Request, res: Response): Promise<void> => {
+  const { providerName } = req.params;
+  const normalizedProviderName = providerName?.toLowerCase() || ''; // Normalize provider name
+  const signature =
+    (req.headers['x-signature'] as string) ||
+    (req.headers['stripe-signature'] as string) ||
+    (req.headers['x-razorpay-signature'] as string) ||
+    'no-signature'; // Unified header check
+  const rawBody = (req as any).rawBody || JSON.stringify(req.body);
+
+  try {
+    // 1. Audit Log Event Receipt (Log before validation to capture all attempts)
+    await auditService.logAuditEntry({
+      resourceType: 'webhook',
+      resourceId: '000000000000000000000002', // System resource ID (valid ObjectId)
+      action: `webhook.received.${normalizedProviderName}`,
+      actorId: '000000000000000000000001', // System user ID
+      actorRole: 'system',
+      details: { providerName: normalizedProviderName, eventType: req.body.type, headers: req.headers },
+    });
+
+    // 2. SECURITY: Signature Verification
+    if (!webhookSecurity.verifySignature(normalizedProviderName, rawBody, signature)) {
+      // 401 Unauthorized is mandatory for signature failure
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.UNAUTHORIZED,
+        `Signature validation failed for ${normalizedProviderName}.`,
+        401
+      );
+    }
+
+    // 3. Routing Logic
+    try {
+      const eventType = req.body.type;
+
+      if (normalizedProviderName === 'stripe' || normalizedProviderName === 'razorpay') {
+        await paymentService.processPaymentEvent(eventType, req.body);
+      } else if (normalizedProviderName === 'docusign' || normalizedProviderName === 'signwell') {
+        await agreementService.processEsignEvent(eventType, req.body);
+      } else {
+        // Unhandled provider, but still secure (200 OK to prevent retries)
+        res.status(200).send('Provider not handled.');
+        return;
+      }
+
+      // 4. Success (200 OK) - Required by external provider
+      res.status(200).send('Event processed.');
+      return;
+    } catch (error: unknown) {
+      // Log business logic failure but return 200/400 to provider to manage retries internally
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`Webhook Processing Fail [${normalizedProviderName}]:`, errorMessage);
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.VALIDATION_ERROR,
+        'Business logic failure.',
+        400
+      );
+    }
+  } catch (error: unknown) {
+    // Catch audit logging errors
+    console.error(`Audit logging error for webhook from ${normalizedProviderName}:`, error);
+    // Still process the webhook even if audit logging fails
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error processing webhook.',
+      500
+    );
   }
 };
 

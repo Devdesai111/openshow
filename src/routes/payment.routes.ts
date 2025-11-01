@@ -12,6 +12,7 @@ import {
   getTransactionDetailsController,
   listTransactionsValidation,
   transactionIdParamValidation,
+  unifiedWebhookController,
 } from '../controllers/payment.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -66,6 +67,12 @@ router.get(
   transactionIdParamValidation,
   getTransactionDetailsController
 );
+
+// --- Unified Webhooks (Public) ---
+
+// POST /webhooks/provider/:providerName - Unified receiver for all PSP/E-sign webhooks (Task 69)
+// NOTE: This route needs special raw body parsing middleware in the main Express config.
+router.post('/webhooks/provider/:providerName', unifiedWebhookController);
 
 export default router;
 

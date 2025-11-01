@@ -448,5 +448,23 @@ export class AgreementService {
     // PRODUCTION: Emit 'agreement.anchored' event
     console.log(`[Event] Agreement ${agreementId} anchored on ${chain} with TXID: ${txId}.`);
   }
+
+  /**
+   * Worker-called method to process a specific e-sign related event type.
+   * @param eventType - Event type (e.g., 'envelope.signed')
+   * @param payload - Webhook payload
+   */
+  public async processEsignEvent(eventType: string, payload: any): Promise<void> {
+    const providerEnvelopeId = payload.data?.object?.envelopeId; // Example Docusign/SignWell ID
+    
+    if (eventType === 'envelope.signed' || eventType === 'recipient.signed') {
+      // PRODUCTION: Find Agreement by providerEnvelopeId
+      // Call completeSigning internally (Task 26) using the 'complete_esign' method
+      console.log(`[E-Sign Event] Recipient signed on Envelope ID: ${providerEnvelopeId}. Updating Agreement status...`);
+      // await this.completeSigning('agreementId', 'signerEmail', 'complete_esign');
+    }
+
+    // PRODUCTION: Emit 'agreement.updated' event
+  }
 }
 

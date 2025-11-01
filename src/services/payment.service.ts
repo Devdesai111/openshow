@@ -8,16 +8,7 @@ import { RevenueService } from './revenue.service';
 import { IAuthUser } from '../middleware/auth.middleware';
 import { Types } from 'mongoose';
 import * as crypto from 'crypto';
-
-// Mock Webhook Signature Utility
-class WebhookSecurity {
-  public verifySignature(_payload: string, signature: string, _secret: string): boolean {
-    // PRODUCTION: Implement HMAC SHA256 verification (e.g., Stripe.webhooks.verifyHeader)
-    const expectedSecret = process.env.STRIPE_WEBHOOK_SECRET || 'wh_secret';
-    return signature === expectedSecret; // Mock check
-  }
-}
-const webhookSecurity = new WebhookSecurity();
+import { webhookSecurity } from '../utils/webhookSecurity';
 
 // Mock Event Emitter
 class MockEventEmitter {
@@ -181,15 +172,37 @@ export class PaymentService {
   }
 
   /**
+   * Worker-called method to process a specific payment-related event type (simplified version for unified webhook).
+   * @param eventType - Event type (e.g., 'payment_intent.succeeded')
+   * @param payload - Webhook payload
+   */
+  public async processPaymentEvent(eventType: string, payload: any): Promise<void> {
+    // NOTE: This logic is heavily simplified from Task 35's handleWebhook logic
+    
+    const providerPaymentIntentId = payload.data?.object?.id; // Example extraction
+    
+    if (eventType === 'payment_intent.succeeded' || eventType === 'charge.succeeded') {
+      // PRODUCTION: Find Transaction by Intent ID, update status, and TRIGGER lockEscrow (Task 35)
+      console.log(`[Payment Event] Payment succeeded for Intent ID: ${providerPaymentIntentId}. Triggering Escrow Lock...`);
+      // await this.lockEscrow({...});
+    } else if (eventType === 'charge.refunded' || eventType === 'refund.succeeded') {
+      // PRODUCTION: Find Refund Transaction, update status to 'succeeded'
+      console.log(`[Payment Event] Refund succeeded for TX ID: ${providerPaymentIntentId}.`);
+    }
+    
+    // PRODUCTION: Emit 'payment.updated' event
+  }
+
+  /**
    * Handles incoming PSP webhooks (e.g., payment_intent.succeeded).
    * @param provider - PSP provider name
    * @param payload - Webhook payload from PSP
    * @param signature - Webhook signature for verification
    * @throws {Error} - 'InvalidWebhookSignature', 'MissingCorrelationID', 'TransactionNotFound'
    */
-  public async handleWebhook(_provider: string, payload: any, signature: string): Promise<void> {
+  public async handleWebhook(provider: string, payload: any, signature: string): Promise<void> {
     // 1. SECURITY: Signature Verification
-    if (!webhookSecurity.verifySignature(JSON.stringify(payload), signature, process.env.STRIPE_WEBHOOK_SECRET || 'wh_secret')) {
+    if (!webhookSecurity.verifySignature(provider, JSON.stringify(payload), signature)) {
       throw new Error('InvalidWebhookSignature');
     }
 
