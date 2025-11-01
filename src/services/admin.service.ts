@@ -2,12 +2,16 @@
 import { UserModel, IUser } from '../models/user.model';
 import { DisputeRecordModel, IDisputeRecord, IResolution } from '../models/disputeRecord.model';
 import { EscrowModel } from '../models/escrow.model';
+import { PaymentTransactionModel } from '../models/paymentTransaction.model';
+import { PayoutBatchModel } from '../models/payout.model';
 import { AuditService } from './audit.service';
 import { PaymentService } from './payment.service';
+import { JobService } from './job.service';
 import { Types } from 'mongoose';
 
 const auditService = new AuditService();
 const paymentService = new PaymentService();
+const jobService = new JobService();
 
 interface IAdminQueryFilters {
   status?: string;
@@ -269,6 +273,84 @@ export class AdminService {
     });
 
     return updatedDispute.toObject() as IDisputeRecord;
+  }
+
+  interface IFinanceReportFilters {
+    from: Date;
+    to: Date;
+    export?: boolean;
+  }
+
+  /** Generates an aggregated financial report for a given period. */
+  public async getFinanceReport(filters: IFinanceReportFilters, requesterId: string): Promise<any> {
+    const { from, to, export: triggerExport } = filters;
+
+    // 1. Initial Data Aggregation (MongoDB Aggregation Pipeline)
+    const txnPipeline = [
+      {
+        $match: {
+          createdAt: { $gte: from, $lte: to },
+          status: 'succeeded', // Only count successful transactions/funds movements
+        },
+      },
+      {
+        $group: {
+          _id: '$type',
+          totalAmount: { $sum: '$amount' },
+          count: { $sum: 1 },
+        },
+      },
+    ];
+
+    // MOCK/SIMULATION: Payouts are in embedded arrays, requiring separate aggregation
+    const payoutsPipeline = [
+      { $match: { createdAt: { $gte: from, $lte: to } } },
+      { $unwind: '$items' },
+      { $match: { 'items.status': 'paid' } },
+      {
+        $group: {
+          _id: null,
+          totalNetPayouts: { $sum: '$items.netAmount' },
+          totalFees: { $sum: '$items.fees' },
+        },
+      },
+    ];
+
+    const [txnAggregates, payoutAggregates] = await Promise.all([
+      PaymentTransactionModel.aggregate(txnPipeline),
+      PayoutBatchModel.aggregate(payoutsPipeline),
+    ]);
+
+    // 2. Report Compilation
+    const escrowLock = txnAggregates.find((agg: any) => agg._id === 'escrow_lock');
+    const payoutSum = payoutAggregates[0] || { totalNetPayouts: 0, totalFees: 0 };
+
+    const report: any = {
+      period: `${from.toISOString().split('T')[0]} to ${to.toISOString().split('T')[0]}`,
+      totalVolumeCollected: { amount: escrowLock?.totalAmount || 0, currency: 'USD' },
+      totalPlatformFees: { amount: payoutSum.totalFees || 0, currency: 'USD' },
+      totalNetPayouts: { amount: payoutSum.totalNetPayouts || 0, currency: 'USD' },
+      transactionCounts: txnAggregates.reduce((acc, curr) => ({ ...acc, [curr._id]: curr.count }), {}),
+    };
+
+    // 3. Trigger Export Job (If Requested) - Task 67: We don't have export.finance job type yet
+    // Skip for now since this would require Task 68 export.finance job handler
+    if (triggerExport) {
+      // For now, just log that export was requested
+      console.log(`[Task 67] Export requested for finance report, but export.finance job not yet implemented (Task 68).`);
+      // TODO: Enqueue export.finance job when Task 68 is implemented
+    }
+
+    // 4. Audit Log
+    await auditService.logAuditEntry({
+      resourceType: 'report',
+      action: 'report.finance.generated',
+      actorId: requesterId,
+      actorRole: 'admin',
+      details: { filters, metrics: report.transactionCounts },
+    });
+
+    return report;
   }
 }
 

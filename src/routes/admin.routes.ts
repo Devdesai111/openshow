@@ -30,6 +30,8 @@ import {
   resolveDisputeController,
   disputeQueueValidation,
   resolveDisputeValidation,
+  getFinanceReportController,
+  financeReportValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -189,6 +191,17 @@ router.post(
   authorize(userManageAccess), // RBAC check: Admin access
   resolveDisputeValidation,
   resolveDisputeController
+);
+
+// --- Admin Reporting Endpoints (Task 67) ---
+
+// GET /admin/reports/finance - Generate aggregated financial report
+router.get(
+  '/reports/finance',
+  authenticate,
+  authorize(financeAccess), // RBAC check: Finance admin access
+  financeReportValidation,
+  getFinanceReportController
 );
 
 // ... Future Admin endpoints (reconciliation, manual ops) go here ...

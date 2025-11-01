@@ -407,6 +407,12 @@ export const resolveDisputeValidation = [
   body('refundAmount').optional().isInt({ min: 0 }).toInt().withMessage('Refund amount must be non-negative integer.'),
 ];
 
+export const financeReportValidation = [
+  query('from').isISO8601().toDate().withMessage('From date must be valid ISO 8601.').bail(),
+  query('to').isISO8601().toDate().withMessage('To date must be valid ISO 8601.').bail(),
+  query('export').optional().isBoolean().withMessage('Export must be boolean.'),
+];
+
 // --- Admin Audit Controller ---
 
 /** Writes an immutable audit log entry. POST /audit */
@@ -895,6 +901,54 @@ export const resolveDisputeController = async (req: Request, res: Response): Pro
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error resolving dispute.',
+      500
+    );
+  }
+};
+
+/** Generates and returns a financial report. GET /admin/reports/finance */
+export const getFinanceReportController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    if (!req.user || !req.user.sub) {
+      return ResponseBuilder.error(res, ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
+    const requesterId = req.user.sub;
+
+    const { from, to, export: exportFlag } = req.query as any;
+
+    const filters = {
+      from: new Date(from as string),
+      to: new Date(to as string),
+      export: exportFlag === 'true' || exportFlag === true,
+    };
+
+    // Service handles aggregation and optional job queuing
+    const report = await adminService.getFinanceReport(filters, requesterId);
+
+    // If export was triggered, return 202 Accepted, else 200 OK
+    if (filters.export) {
+      return ResponseBuilder.success(res, report, 202);
+    }
+
+    return ResponseBuilder.success(res, report, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error generating report.',
       500
     );
   }
