@@ -361,6 +361,11 @@ export const auditExportValidation = [
   body('format').isIn(['csv', 'pdf', 'ndjson']).withMessage('Format must be csv, pdf, or ndjson.'),
 ];
 
+export const auditVerifyValidation = [
+  query('from').optional().isISO8601().toDate().withMessage('From date must be valid ISO 8601.'),
+  query('to').optional().isISO8601().toDate().withMessage('To date must be valid ISO 8601.'),
+];
+
 export const reportContentValidation = [
   body('resourceType').isIn(['project', 'asset', 'user', 'comment', 'other']).withMessage('Invalid resource type.'),
   body('resourceId').isMongoId().withMessage('Resource ID must be a valid Mongo ID.'),
@@ -569,6 +574,43 @@ export const exportAuditLogsController = async (req: Request, res: Response): Pr
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error queuing export job.',
+      500
+    );
+  }
+};
+
+/** Verifies the cryptographic integrity of the audit chain. GET /admin/audit-logs/verify */
+export const verifyChainController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const { from, to } = req.query;
+
+    // Service performs the integrity check
+    const report = await auditService.verifyAuditChainIntegrity(from as Date | string | undefined, to as Date | string | undefined);
+
+    // Success (200 OK) or Conflict (409) if tampering found
+    if (report.tamperDetected) {
+      // Return 409 Conflict if tampering found (critical administrative alert)
+      return ResponseBuilder.success(res, report, 409);
+    }
+
+    return ResponseBuilder.success(res, report, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error during chain verification.',
       500
     );
   }

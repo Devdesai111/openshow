@@ -27,6 +27,15 @@ interface IAuditQueryFilters {
 
 const jobService = new JobService();
 
+/** Interface for verification report */
+export interface IVerificationReport {
+  status: 'INTEGRITY_OK' | 'TAMPER_DETECTED' | 'NO_DATA';
+  checkedLogsCount: number;
+  tamperDetected: boolean;
+  firstMismatchId: string | null;
+  verificationHash: string; // The last successfully calculated hash (end of the chain)
+}
+
 export class AuditService {
   /** Retrieves the last successfully committed log for chain linking. */
   private async getLastLog(): Promise<IAuditLog | null> {
@@ -197,6 +206,97 @@ export class AuditService {
     });
 
     console.log(`[Audit] ${result.modifiedCount} logs marked immutable. Snapshot: ${snapshotAssetId}.`);
+  }
+
+  /** Re-computes the hash chain for a period to verify data integrity. */
+  public async verifyAuditChainIntegrity(from?: Date | string, to?: Date | string): Promise<IVerificationReport> {
+    const query: any = {};
+    if (from || to) {
+      query.timestamp = {};
+      if (from) {
+        const fromDate = typeof from === 'string' ? new Date(from) : from;
+        query.timestamp.$gte = fromDate;
+      }
+      if (to) {
+        const toDate = typeof to === 'string' ? new Date(to) : to;
+        query.timestamp.$lte = toDate;
+      }
+    }
+
+    // 1. Fetch Logs Chronologically (Must be the only reliable source)
+    const logs = await AuditLogModel.find(query)
+      .sort({ timestamp: 1 })
+      .lean() as IAuditLog[];
+
+    if (logs.length === 0) {
+      return {
+        status: 'NO_DATA',
+        checkedLogsCount: 0,
+        tamperDetected: false,
+        firstMismatchId: null,
+        verificationHash: '0x0',
+      };
+    }
+
+    // Start verification: Each log's hash should be computed using its stored previousHash
+    let tamperDetected = false;
+    let firstMismatchId: string | null = null;
+    let checkedLogsCount = 0;
+    let lastComputedHash: string | null = null;
+
+    // 2. Iterate and Re-Compute Chain
+    for (let i = 0; i < logs.length; i++) {
+      const currentLog = logs[i]!;
+
+      // For logs after the first, verify that the chain links correctly
+      // The current log's stored previousHash should match the computed hash from the previous log
+      if (i > 0 && lastComputedHash !== null) {
+        if (lastComputedHash !== currentLog.previousHash) {
+          tamperDetected = true;
+          firstMismatchId = currentLog.auditId;
+          console.error(`TAMPER DETECTED at Log ${currentLog.auditId}: Previous hash chain broken. Expected: ${lastComputedHash}, Stored: ${currentLog.previousHash}`);
+          break;
+        }
+      }
+
+      // Use the log's stored previousHash to recompute its hash (same as when it was created)
+      const logDataToHash: Omit<IAuditLog, 'hash' | 'createdAt' | 'updatedAt' | '_id' | 'immutable'> = {
+        auditId: currentLog.auditId,
+        resourceType: currentLog.resourceType,
+        resourceId: currentLog.resourceId,
+        action: currentLog.action,
+        actorId: currentLog.actorId,
+        actorRole: currentLog.actorRole,
+        timestamp: currentLog.timestamp,
+        ip: currentLog.ip,
+        details: currentLog.details,
+        previousHash: currentLog.previousHash, // Use the log's stored previousHash (same as when created)
+      };
+
+      // Recompute hash using the log's stored previousHash (same as when it was created)
+      const reCalculatedHash = computeLogHash(logDataToHash, currentLog.previousHash);
+
+      // 3. Compare Stored Hash vs. Re-calculated Hash
+      if (reCalculatedHash !== currentLog.hash) {
+        tamperDetected = true;
+        firstMismatchId = currentLog.auditId;
+        console.error(`TAMPER DETECTED at Log ${currentLog.auditId}. Expected: ${reCalculatedHash}, Stored: ${currentLog.hash}`);
+        break; // Stop on first error
+      }
+
+      // Update for the next iteration: The successfully validated hash becomes the next 'previousHash'
+      lastComputedHash = reCalculatedHash;
+      checkedLogsCount++;
+    }
+
+    // 4. Return Report
+    return {
+      status: tamperDetected ? 'TAMPER_DETECTED' : 'INTEGRITY_OK',
+      checkedLogsCount,
+      tamperDetected,
+      firstMismatchId,
+      verificationHash: lastComputedHash || '0x0', // The last calculated hash
+    };
   }
 }
 

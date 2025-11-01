@@ -16,8 +16,10 @@ import {
   logAuditValidation,
   queryAuditLogsController,
   exportAuditLogsController,
+  verifyChainController,
   auditQueryValidation,
   auditExportValidation,
+  auditVerifyValidation,
   getModerationQueueController,
   takeActionController,
   moderationQueueValidation,
@@ -133,6 +135,17 @@ router.post(
   authorize(financeAccess), // RBAC check
   auditExportValidation,
   exportAuditLogsController
+);
+
+// --- Admin Audit Verification Endpoints (Task 72) ---
+
+// GET /admin/audit-logs/verify - Verify hash chain integrity
+router.get(
+  '/audit-logs/verify',
+  authenticate,
+  authorize(financeAccess), // RBAC check
+  auditVerifyValidation,
+  verifyChainController
 );
 
 // --- Admin Moderation Endpoints (Task 63) ---
