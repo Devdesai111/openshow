@@ -20,6 +20,7 @@ import userSettingsRoutes from './routes/userSettings.routes';
 import utilityRoutes from './routes/utility.routes';
 import jobRoutes from './routes/job.routes';
 import moderationRoutes from './routes/moderation.routes';
+import { metricsMiddleware } from './middleware/metrics.middleware';
 
 const app: Application = express();
 
@@ -28,6 +29,8 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// Apply metrics middleware early to track all requests (Task 75)
+app.use(metricsMiddleware);
 
 // Routes
 app.use('/auth', authRoutes);

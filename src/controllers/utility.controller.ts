@@ -46,23 +46,24 @@ export const healthController = async (_req: Request, res: Response): Promise<vo
 /**
  * Handles Prometheus/Grafana metrics endpoint. GET /metrics
  */
-export const metricsController = (_req: Request, res: Response): void => {
-  // PRODUCTION: This would typically be protected by IP/Internal Auth and served by a library like 'prom-client'.
-  // For now, return a simple text-based placeholder (Prometheus format).
-  res.setHeader('Content-Type', 'text/plain');
+export const metricsController = async (_req: Request, res: Response): Promise<void> => {
+  try {
+    // Retrieve all metrics data in Prometheus format
+    const { getMetricsRegistry, getMetricsContentType } = await import('../utils/metrics.utility');
+    const metrics = await getMetricsRegistry();
 
-  const simpleMetrics = `# HELP node_uptime_seconds Uptime of the Node.js process.
-# TYPE node_uptime_seconds gauge
-node_uptime_seconds ${process.uptime()}
-
-# HELP custom_http_requests_total Total number of processed HTTP requests.
-# TYPE custom_http_requests_total counter
-custom_http_requests_total 1500
-
-# HELP custom_db_connection_status Status of the database connection (1=ok, 0=fail).
-# TYPE custom_db_connection_status gauge
-custom_db_connection_status ${mongoose.connection.readyState === 1 ? 1 : 0}
-`;
-  res.status(200).send(simpleMetrics);
+    // Success (200 OK) with Prometheus content type
+    res.setHeader('Content-Type', getMetricsContentType());
+    res.status(200).send(metrics);
+  } catch (error) {
+    // Should not happen, but a safe 500 response
+    console.error('Metrics endpoint error:', error);
+    res.status(500).json({
+      error: {
+        code: 'metrics_fail',
+        message: 'Failed to retrieve metrics.',
+      },
+    });
+  }
 };
 
