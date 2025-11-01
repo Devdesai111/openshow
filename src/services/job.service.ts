@@ -139,16 +139,34 @@ export class JobService {
         return updatedJob;
     }
 
-    /** Reports job failure, calculates next retry time, and updates status. */
+    /** Reports job failure, calculates next retry time, and updates status atomically. */
     public async reportJobFailure(jobId: string, workerId: string, error: any): Promise<IJob> {
-        const job = await JobModel.findOne({ jobId, workerId, status: 'leased' });
-        if (!job) { throw new Error('JobNotLeasedOrNotFound'); }
-
-        const nextAttempt = job.attempt + 1;
+        // Use aggregation pipeline update to atomically increment attempt and calculate next state
+        // This ensures all updates happen in a single atomic operation
+        const errorMessage = error?.message || 'Unknown error';
         
-        if (nextAttempt > job.maxAttempts) {
+        // Fetch the job first to get maxAttempts (needed for calculation)
+        // We still need this for the retry logic, but we'll do an atomic update after
+        const currentJob = await JobModel.findOne({ jobId, workerId, status: 'leased' }).lean() as IJob;
+        if (!currentJob) { throw new Error('JobNotLeasedOrNotFound'); }
+
+        const nextAttempt = currentJob.attempt + 1;
+        
+        // Determine next status and fields based on attempt count
+        let updateFields: any = {
+            $inc: { attempt: 1 }, // Atomically increment attempt
+            $set: {
+                lastError: { code: 'worker_fail', message: errorMessage },
+            },
+            $unset: {
+                workerId: '', // Clear worker ID (remove field)
+                leaseExpiresAt: '', // Clear lease (remove field)
+            },
+        };
+
+        if (nextAttempt > currentJob.maxAttempts) {
             // Permanent failure: Move to DLQ
-            job.status = 'dlq';
+            updateFields.$set.status = 'dlq';
             // PRODUCTION: Trigger Admin Escalation
             console.error(`[Job DLQ] Job ${jobId} failed after ${nextAttempt} attempts.`);
         } else {
@@ -156,26 +174,31 @@ export class JobService {
             const delay = getExponentialBackoffDelay(nextAttempt);
             if (delay === -1) {
                 // Max attempts reached
-                job.status = 'dlq';
+                updateFields.$set.status = 'dlq';
                 console.error(`[Job DLQ] Job ${jobId} failed after max attempts.`);
             } else {
-                job.status = 'queued';
-                job.nextRunAt = new Date(Date.now() + delay);
-                console.warn(`[Job Retry] Job ${jobId} failed. Next run: ${job.nextRunAt.toISOString()}`);
+                updateFields.$set.status = 'queued';
+                updateFields.$set.nextRunAt = new Date(Date.now() + delay);
+                console.warn(`[Job Retry] Job ${jobId} failed. Next run: ${updateFields.$set.nextRunAt.toISOString()}`);
             }
-            job.leaseExpiresAt = undefined; // Clear lease
         }
-        
-        // Update error metadata
-        job.lastError = { code: 'worker_fail', message: error?.message || 'Unknown error' };
-        job.workerId = undefined; // Clear worker ID
-        
-        const updatedJob = await job.save();
+
+        // Apply all updates atomically in a single operation
+        const updatedJob = await JobModel.findOneAndUpdate(
+            { jobId, workerId, status: 'leased' }, // Atomic check: must still be leased by this worker
+            updateFields,
+            { new: true }
+        ).lean() as IJob;
+
+        if (!updatedJob) {
+            // Job was not found or not leased by this worker (another worker may have claimed it)
+            throw new Error('JobNotLeasedOrNotFound');
+        }
 
         // PRODUCTION: Emit 'job.failed' event
         console.log(`[Event] Job ${jobId} failed (attempt ${nextAttempt}).`);
 
-        return updatedJob.toObject() as IJob;
+        return updatedJob;
     }
 }
 

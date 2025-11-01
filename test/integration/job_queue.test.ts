@@ -663,7 +663,7 @@ describe('Jobs & Worker Queue Integration Tests', () => {
       const job = await JobModel.findOne({ jobId: leasedJobId });
       expect(job).toBeDefined();
       expect(job!.status).toBe('queued');
-      expect(job!.attempt).toBe(1); // Incremented on lease
+      expect(job!.attempt).toBe(2); // Incremented on lease (1) and again on failure (2)
       expect(job!.nextRunAt).toBeDefined();
       expect(job!.nextRunAt!.getTime()).toBeGreaterThan(Date.now()); // Should be in future
       expect(job!.lastError).toBeDefined();
