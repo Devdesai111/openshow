@@ -6,6 +6,7 @@ import { RevenueService } from '../services/revenue.service';
 import { DiscoveryService } from '../services/discovery.service';
 import { JobService } from '../services/job.service';
 import { AuditService } from '../services/audit.service';
+import { ModerationService } from '../services/moderation.service';
 import { updateRankingWeights, IRankingWeights } from '../config/rankingWeights';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -15,6 +16,7 @@ const revenueService = new RevenueService();
 const discoveryService = new DiscoveryService();
 const jobService = new JobService();
 const auditService = new AuditService();
+const moderationService = new ModerationService();
 
 // --- Validation Middleware ---
 
@@ -353,6 +355,27 @@ export const auditExportValidation = [
   body('format').isIn(['csv', 'pdf', 'ndjson']).withMessage('Format must be csv, pdf, or ndjson.'),
 ];
 
+export const reportContentValidation = [
+  body('resourceType').isIn(['project', 'asset', 'user', 'comment', 'other']).withMessage('Invalid resource type.'),
+  body('resourceId').isMongoId().withMessage('Resource ID must be a valid Mongo ID.'),
+  body('reason').isString().isLength({ min: 10 }).withMessage('Reason is required (min 10 chars).'),
+  body('evidenceAssetIds').optional().isArray().withMessage('Evidence must be an array of asset IDs.'),
+  body('severity').optional().isIn(['low', 'medium', 'high', 'legal']).withMessage('Invalid severity level.'),
+];
+
+export const moderationQueueValidation = [
+  query('status').optional().isIn(['open', 'in_review', 'actioned', 'closed']).withMessage('Invalid status filter.'),
+  query('severity').optional().isIn(['low', 'medium', 'high', 'legal']).withMessage('Invalid severity filter.'),
+  query('page').optional().isInt({ min: 1 }).toInt(),
+  query('per_page').optional().isInt({ min: 1, max: 100 }).toInt(),
+];
+
+export const takeActionValidation = [
+  param('modId').isString().withMessage('Moderation ID is required.'),
+  body('action').isIn(['takedown', 'suspend_user', 'warn', 'no_action', 'escalate']).withMessage('Invalid moderation action.'),
+  body('notes').isString().isLength({ min: 5 }).withMessage('Notes are required for action (min 5 chars).'),
+];
+
 // --- Admin Audit Controller ---
 
 /** Writes an immutable audit log entry. POST /audit */
@@ -500,6 +523,139 @@ export const exportAuditLogsController = async (req: Request, res: Response): Pr
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error queuing export job.',
+      500
+    );
+  }
+};
+
+/** Allows users (or public) to report content. POST /moderation/report */
+export const reportContentController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    // Reporter ID is optional (public report), but grab if authenticated
+    const reporterId = req.user?.sub || null;
+
+    const record = await moderationService.reportContent(reporterId, req.body);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        modId: record.modId,
+        status: record.status,
+        message: 'Report filed successfully. Thank you.',
+      },
+      201
+    );
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error filing report.',
+      500
+    );
+  }
+};
+
+/** Admin retrieves the moderation queue. GET /admin/moderation/queue */
+export const getModerationQueueController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const queue = await moderationService.getModerationQueue(req.query);
+    return ResponseBuilder.success(res, queue, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error retrieving moderation queue.',
+      500
+    );
+  }
+};
+
+/** Admin takes action on a reported record. POST /admin/moderation/:modId/action */
+export const takeActionController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    if (!req.user || !req.user.sub) {
+      return ResponseBuilder.error(res, ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
+    const { modId } = req.params;
+    const { action, notes } = req.body as { action?: string; notes?: string };
+    const adminId = req.user.sub!; // Already checked above
+
+    if (!action || !notes || typeof action !== 'string' || typeof notes !== 'string') {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Action and notes are required.', 422);
+    }
+
+    // TypeScript narrowing - after the check, action and notes are guaranteed to be strings
+    const typedAction = action as 'takedown' | 'suspend_user' | 'warn' | 'no_action' | 'escalate';
+    const typedNotes = notes as string;
+
+    const updatedRecord = await moderationService.takeAction(modId, adminId, typedAction, typedNotes);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        modId: updatedRecord.modId,
+        status: updatedRecord.status,
+        actionTaken: action,
+        message: 'Action recorded successfully. Downstream system calls may be initiated.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'RecordNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Moderation record not found.', 404);
+    }
+    if (errorMessage === 'RecordAlreadyProcessed') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.CONFLICT,
+        'This report has already been actioned or closed.',
+        409
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error taking action.',
       500
     );
   }

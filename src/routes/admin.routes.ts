@@ -18,6 +18,10 @@ import {
   exportAuditLogsController,
   auditQueryValidation,
   auditExportValidation,
+  getModerationQueueController,
+  takeActionController,
+  moderationQueueValidation,
+  takeActionValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -118,7 +122,27 @@ router.post(
   exportAuditLogsController
 );
 
-// ... Future Admin endpoints (moderation, reconciliation, manual ops) go here ...
+// --- Admin Moderation Endpoints (Task 63) ---
+
+// GET /admin/moderation/queue - Get list of open reports
+router.get(
+  '/moderation/queue',
+  authenticate,
+  authorize(financeAccess), // RBAC check: Admin/Moderator access
+  moderationQueueValidation,
+  getModerationQueueController
+);
+
+// POST /admin/moderation/:modId/action - Take action (takedown, suspend, warn)
+router.post(
+  '/moderation/:modId/action',
+  authenticate,
+  authorize(financeAccess), // RBAC check: Admin/Moderator access
+  takeActionValidation,
+  takeActionController
+);
+
+// ... Future Admin endpoints (reconciliation, manual ops) go here ...
 
 export default router;
 
