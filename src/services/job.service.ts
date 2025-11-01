@@ -3,6 +3,7 @@ import { JobModel, IJob } from '../models/job.model';
 import { Types } from 'mongoose';
 import { validateJobPayload, getJobPolicy } from '../jobs/jobRegistry';
 import { getExponentialBackoffDelay } from '../utils/retryPolicy';
+import { IAuthUser } from '../middleware/auth.middleware';
 
 const DEFAULT_LEASE_TIME_S = 300; // 5 minutes
 
@@ -201,6 +202,86 @@ export class JobService {
         console.log(`[Event] Job ${jobId} failed (attempt ${nextAttempt}).`);
 
         return updatedJob;
+    }
+
+    /** Retrieves the status and full details of a single job. */
+    public async getJobStatus(jobId: string, requesterId: string, requesterRole: IAuthUser['role']): Promise<IJob> {
+        const job = await JobModel.findOne({ jobId }).lean() as IJob;
+        if (!job) { throw new Error('JobNotFound'); }
+        
+        // Authorization: Creator or Admin can view details
+        const isCreator = job.createdBy?.toString() === requesterId;
+        const isAdmin = requesterRole === 'admin';
+
+        if (!isCreator && !isAdmin) {
+            throw new Error('PermissionDenied');
+        }
+
+        return job;
+    }
+
+    /** Admin function to list jobs with filters. */
+    public async listAdminJobs(queryParams: any): Promise<any> {
+        const { status, type, page = 1, per_page = 20 } = queryParams;
+        const limit = parseInt(per_page as string) || 20;
+        const skip = (parseInt(page as string) - 1) * limit;
+
+        const filters: any = {};
+        if (status) filters.status = status;
+        if (type) filters.type = type;
+        
+        // Execution
+        const [totalResults, jobs] = await Promise.all([
+            JobModel.countDocuments(filters),
+            JobModel.find(filters)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean() as Promise<IJob[]>
+        ]);
+
+        return {
+            meta: { page: parseInt(page as string), per_page: limit, total: totalResults, total_pages: Math.ceil(totalResults / limit) },
+            data: jobs.map(job => ({ 
+                ...job, 
+                createdBy: job.createdBy?.toString(), 
+                nextRunAt: job.nextRunAt?.toISOString(),
+                createdAt: job.createdAt?.toISOString(),
+                updatedAt: job.updatedAt?.toISOString(),
+                leaseExpiresAt: job.leaseExpiresAt?.toISOString(),
+            })),
+        };
+    }
+
+    /** Admin function to retrieve high-level job statistics. */
+    public async getJobStats(): Promise<any> {
+        // 1. Total Counts by Status (Aggregation)
+        const statusCounts = await JobModel.aggregate([
+            { $group: { _id: '$status', count: { $sum: 1 } } }
+        ]);
+
+        // 2. Oldest Queued Job Age
+        const oldestJob = await JobModel.findOne({ status: 'queued' })
+            .sort({ createdAt: 1 })
+            .select('createdAt')
+            .lean();
+
+        const oldestAgeMs = oldestJob && oldestJob.createdAt ? new Date().getTime() - oldestJob.createdAt.getTime() : 0;
+
+        // Map status counts to a convenient object
+        const statusMap: Record<string, number> = {};
+        statusCounts.forEach((item: { _id: string; count: number }) => {
+            statusMap[item._id] = item.count;
+        });
+
+        // Get total count
+        const totalJobs = await JobModel.countDocuments();
+
+        return {
+            totalJobs,
+            statusCounts: statusMap,
+            oldestQueuedJobAgeMs: oldestAgeMs,
+        };
     }
 }
 

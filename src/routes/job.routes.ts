@@ -9,6 +9,7 @@ import {
     leaseValidation,
     reportParamValidation
 } from '../controllers/job.controller';
+import { getJobStatusController, jobIdParamValidation } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware'; 
 import { authorize } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../config/permissions';
@@ -55,6 +56,16 @@ router.post(
     authorize(adminAccess),
     reportParamValidation,
     reportFailureController
+);
+
+// --- Job Monitoring Endpoints (Task 59) ---
+
+// GET /jobs/:jobId - Get job status and details
+router.get(
+    '/:jobId',
+    authenticate,
+    jobIdParamValidation,
+    getJobStatusController
 );
 
 export default router;

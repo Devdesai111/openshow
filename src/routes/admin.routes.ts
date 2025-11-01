@@ -9,6 +9,9 @@ import {
   updateRankingWeightsValidation,
   reRankHookController,
   reRankHookValidation,
+  listAdminJobsController,
+  getJobStatsController,
+  jobQueueValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -57,6 +60,25 @@ router.post(
   authorize(financeAccess), // RBAC check: System/Admin access only
   reRankHookValidation,
   reRankHookController
+);
+
+// --- Admin Job Monitoring Endpoints (Task 59) ---
+
+// GET /admin/jobs/queue - List all jobs for monitoring
+router.get(
+  '/jobs/queue',
+  authenticate,
+  authorize(financeAccess),
+  jobQueueValidation,
+  listAdminJobsController
+);
+
+// GET /admin/jobs/stats - High-level statistics
+router.get(
+  '/jobs/stats',
+  authenticate,
+  authorize(financeAccess),
+  getJobStatsController
 );
 
 // ... Future Admin endpoints (moderation, reconciliation, manual ops) go here ...
