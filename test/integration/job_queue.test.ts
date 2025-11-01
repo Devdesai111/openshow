@@ -55,7 +55,7 @@ describe('Jobs & Worker Queue Integration Tests', () => {
       // Arrange
       const payload = {
         type: 'thumbnail.create',
-        payload: { assetId: 'asset_123', format: 'jpeg' },
+        payload: { assetId: 'asset_123', versionNumber: 1 },
         priority: 75,
       };
 
@@ -78,13 +78,14 @@ describe('Jobs & Worker Queue Integration Tests', () => {
       expect(job!.status).toBe('queued');
       expect(job!.attempt).toBe(0);
       expect(job!.priority).toBe(75);
+      expect(job!.maxAttempts).toBe(3); // Policy default for thumbnail.create
     });
 
     it('T52.2 - should return 403 for non-admin user (403 Forbidden)', async () => {
       // Arrange
       const payload = {
         type: 'thumbnail.create',
-        payload: { assetId: 'asset_123' },
+        payload: { assetId: 'asset_123', versionNumber: 1 },
       };
 
       // Act
@@ -102,7 +103,7 @@ describe('Jobs & Worker Queue Integration Tests', () => {
       // Arrange
       const payload = {
         type: 'thumbnail.create',
-        payload: { assetId: 'asset_123' },
+        payload: { assetId: 'asset_123', versionNumber: 1 },
       };
 
       // Act
@@ -149,12 +150,118 @@ describe('Jobs & Worker Queue Integration Tests', () => {
       expect(response.body.error).toHaveProperty('code', 'validation_error');
     });
 
+    it('T53.2 - should return 422 for missing required field', async () => {
+      // Arrange: Missing versionNumber (required field)
+      const payload = {
+        type: 'thumbnail.create',
+        payload: { assetId: 'asset_123' }, // Missing versionNumber
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/jobs')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(422);
+      expect(response.body.error).toHaveProperty('code', 'validation_error');
+      expect(response.body.error.message).toContain('Missing required field');
+    });
+
+    it('T53.3 - should return 404 for unknown job type', async () => {
+      // Arrange
+      const payload = {
+        type: 'unknown.job',
+        payload: {},
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/jobs')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(404);
+      expect(response.body.error).toHaveProperty('code', 'not_found');
+      expect(response.body.error.message).toContain('not registered');
+    });
+
+    it('T53.4 - should apply policy maxAttempts when not provided', async () => {
+      // Arrange
+      const payload = {
+        type: 'thumbnail.create',
+        payload: { assetId: 'asset_123', versionNumber: 1 },
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/jobs')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(201);
+
+      // Verify policy maxAttempts was applied
+      const job = await JobModel.findOne({ jobId: response.body.jobId });
+      expect(job).toBeDefined();
+      expect(job!.maxAttempts).toBe(3); // Policy default for thumbnail.create
+    });
+
+    it('should allow overriding policy maxAttempts', async () => {
+      // Arrange: Override maxAttempts
+      const payload = {
+        type: 'thumbnail.create',
+        payload: { assetId: 'asset_123', versionNumber: 1 },
+        maxAttempts: 10, // Override policy default of 3
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/jobs')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(201);
+
+      // Verify override was applied
+      const job = await JobModel.findOne({ jobId: response.body.jobId });
+      expect(job).toBeDefined();
+      expect(job!.maxAttempts).toBe(10); // Override value
+    });
+
+    it('should validate payout.execute job type', async () => {
+      // Arrange
+      const payload = {
+        type: 'payout.execute',
+        payload: { batchId: 'batch_123', escrowId: 'escrow_456' },
+      };
+
+      // Act
+      const response = await request(app)
+        .post('/jobs')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(201);
+      expect(response.body).toHaveProperty('jobId');
+
+      // Verify payout.execute policy was applied
+      const job = await JobModel.findOne({ jobId: response.body.jobId });
+      expect(job).toBeDefined();
+      expect(job!.maxAttempts).toBe(10); // Policy default for payout.execute
+    });
+
     it('should support scheduled jobs (scheduleAt in future)', async () => {
       // Arrange
       const futureDate = new Date(Date.now() + 60000); // 1 minute in future
       const payload = {
-        type: 'payout.process',
-        payload: { payoutId: 'payout_123' },
+        type: 'payout.execute',
+        payload: { batchId: 'batch_123', escrowId: 'escrow_456' },
         scheduleAt: futureDate.toISOString(),
       };
 
@@ -184,7 +291,7 @@ describe('Jobs & Worker Queue Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           type: 'thumbnail.create',
-          payload: { assetId: 'asset_123' },
+          payload: { assetId: 'asset_123', versionNumber: 1 },
         });
 
       const workerId = 'worker_123';
@@ -226,7 +333,7 @@ describe('Jobs & Worker Queue Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           type: 'thumbnail.create',
-          payload: { assetId: 'asset_123' },
+          payload: { assetId: 'asset_123', versionNumber: 1 },
         });
       const singleJobId = createResponse.body.jobId;
 
@@ -283,15 +390,15 @@ describe('Jobs & Worker Queue Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           type: 'thumbnail.create',
-          payload: { assetId: 'asset_123' },
+          payload: { assetId: 'asset_123', versionNumber: 1 },
         });
 
       await request(app)
         .post('/jobs')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
-          type: 'payout.process',
-          payload: { payoutId: 'payout_123' },
+          type: 'payout.execute',
+          payload: { batchId: 'batch_123', escrowId: 'escrow_456' },
         });
 
       // Act: Lease only 'thumbnail.create' jobs
@@ -315,7 +422,7 @@ describe('Jobs & Worker Queue Integration Tests', () => {
           .set('Authorization', `Bearer ${adminToken}`)
           .send({
             type: 'thumbnail.create',
-            payload: { assetId: `asset_${i}` },
+            payload: { assetId: `asset_${i}`, versionNumber: 1 },
           });
       }
 
@@ -362,8 +469,8 @@ describe('Jobs & Worker Queue Integration Tests', () => {
         .post('/jobs')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
-          type: 'payout.process',
-          payload: { payoutId: 'payout_123' },
+          type: 'payout.execute',
+          payload: { batchId: 'batch_123', escrowId: 'escrow_456' },
           scheduleAt: futureDate.toISOString(),
         });
 
@@ -384,7 +491,7 @@ describe('Jobs & Worker Queue Integration Tests', () => {
       const expiredDate = new Date(Date.now() - 1000); // 1 second ago
       const expiredJob = new JobModel({
         type: 'thumbnail.create',
-        payload: { assetId: 'asset_123' },
+        payload: { assetId: 'asset_123', versionNumber: 1 },
         status: 'leased',
         workerId: 'old_worker',
         leaseExpiresAt: expiredDate,

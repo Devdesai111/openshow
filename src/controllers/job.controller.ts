@@ -55,7 +55,28 @@ export const enqueueController = async (req: Request, res: Response): Promise<vo
             nextRunAt: createdJob.nextRunAt.toISOString(),
         }, 201);
     } catch (error: unknown) {
+        // 4. ERROR HANDLING: Catch new service-level validation errors
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        
+        if (errorMessage.includes('JobTypeNotFound')) {
+            return ResponseBuilder.error(
+                res,
+                ErrorCode.NOT_FOUND,
+                'The specified job type is not registered.',
+                404
+            );
+        }
+        if (errorMessage.includes('PayloadValidationFailed')) {
+            // Extract the validation message from the error
+            const validationMessage = errorMessage.replace('PayloadValidationFailed: ', '');
+            return ResponseBuilder.error(
+                res,
+                ErrorCode.VALIDATION_ERROR,
+                validationMessage,
+                422
+            );
+        }
+        
         console.error('Error enqueuing job:', errorMessage);
         return ResponseBuilder.error(
             res,

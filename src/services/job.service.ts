@@ -1,6 +1,7 @@
 // src/services/job.service.ts
 import { JobModel, IJob } from '../models/job.model';
 import { Types } from 'mongoose';
+import { validateJobPayload, getJobPolicy } from '../jobs/jobRegistry';
 
 const DEFAULT_LEASE_TIME_S = 300; // 5 minutes
 
@@ -22,16 +23,30 @@ interface ILeaseRequestDTO {
 
 export class JobService {
 
-    /** Enqueues a new job into the worker queue. */
+    /** Enqueues a new job with schema validation and policy application. */
     public async enqueueJob(data: IEnqueueRequestDTO): Promise<IJob> {
         const { type, payload, priority, scheduleAt, maxAttempts, createdBy } = data;
         
-        // 1. Create Job Record
+        // 1. VALIDATION: Check Job Type and Payload Schema (CRITICAL)
+        try {
+            validateJobPayload(type, payload);
+        } catch (e: any) {
+            if (e.message.includes('JobTypeNotFound')) {
+                throw new Error('JobTypeNotFound');
+            }
+            throw new Error(`PayloadValidationFailed: ${e.message}`);
+        }
+        
+        // 2. APPLY POLICY: Retrieve Max Attempts
+        const policy = getJobPolicy(type);
+        const finalMaxAttempts = maxAttempts || policy.maxAttempts;
+
+        // 3. Create Job Record
         const newJob = new JobModel({
             type,
             payload,
             priority: priority || 50,
-            maxAttempts: maxAttempts || 5,
+            maxAttempts: finalMaxAttempts, // Use policy value
             nextRunAt: scheduleAt || new Date(),
             createdBy: createdBy ? new Types.ObjectId(createdBy) : undefined,
             status: 'queued',
