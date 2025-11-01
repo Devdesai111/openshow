@@ -43,6 +43,15 @@ const PDF_GENERATE_SCHEMA: IJobSchema = {
     },
 };
 
+const REINDEX_BATCH_SCHEMA: IJobSchema = {
+    type: 'reindex.batch',
+    required: ['docType', 'docIds'],
+    properties: {
+        docType: 'string', // 'creator' or 'project'
+        docIds: 'array',
+    },
+};
+
 // --- Job Policies (Concurrency/Retry Rules) ---
 const THUMBNAIL_CREATE_POLICY: IJobPolicy = {
     type: THUMBNAIL_CREATE_SCHEMA.type,
@@ -63,12 +72,19 @@ const PDF_GENERATE_POLICY: IJobPolicy = {
     timeoutSeconds: 600, // 10 minutes for potentially long rendering process
 };
 
+const REINDEX_BATCH_POLICY: IJobPolicy = {
+    type: REINDEX_BATCH_SCHEMA.type,
+    maxAttempts: 3,
+    timeoutSeconds: 3600, // 1 hour for long batch processes
+};
+
 // --- Registry Setup ---
 
 const JOB_REGISTRY: Record<string, { schema: IJobSchema, policy: IJobPolicy }> = {
     [THUMBNAIL_CREATE_SCHEMA.type]: { schema: THUMBNAIL_CREATE_SCHEMA, policy: THUMBNAIL_CREATE_POLICY },
     [PAYOUT_EXECUTE_SCHEMA.type]: { schema: PAYOUT_EXECUTE_SCHEMA, policy: PAYOUT_EXECUTE_POLICY },
     [PDF_GENERATE_SCHEMA.type]: { schema: PDF_GENERATE_SCHEMA, policy: PDF_GENERATE_POLICY },
+    [REINDEX_BATCH_SCHEMA.type]: { schema: REINDEX_BATCH_SCHEMA, policy: REINDEX_BATCH_POLICY },
 };
 
 /**
