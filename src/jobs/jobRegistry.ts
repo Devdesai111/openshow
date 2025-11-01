@@ -3,7 +3,7 @@
 interface IJobSchema {
     type: string;
     required: string[];
-    properties: Record<string, 'string' | 'number' | 'boolean' | 'array'>;
+    properties: Record<string, 'string' | 'number' | 'boolean' | 'array' | 'object'>;
 }
 
 export interface IJobPolicy {
@@ -34,6 +34,15 @@ const PAYOUT_EXECUTE_SCHEMA: IJobSchema = {
     },
 };
 
+const PDF_GENERATE_SCHEMA: IJobSchema = {
+    type: 'pdf.generate',
+    required: ['agreementId', 'payloadJson'],
+    properties: {
+        agreementId: 'string',
+        payloadJson: 'object', // Schema.Types.Mixed - validated as object type
+    },
+};
+
 // --- Job Policies (Concurrency/Retry Rules) ---
 const THUMBNAIL_CREATE_POLICY: IJobPolicy = {
     type: THUMBNAIL_CREATE_SCHEMA.type,
@@ -48,11 +57,18 @@ const PAYOUT_EXECUTE_POLICY: IJobPolicy = {
     concurrencyLimit: 5, // Limit simultaneous payout requests to PSP
 };
 
+const PDF_GENERATE_POLICY: IJobPolicy = {
+    type: PDF_GENERATE_SCHEMA.type,
+    maxAttempts: 5,
+    timeoutSeconds: 600, // 10 minutes for potentially long rendering process
+};
+
 // --- Registry Setup ---
 
 const JOB_REGISTRY: Record<string, { schema: IJobSchema, policy: IJobPolicy }> = {
     [THUMBNAIL_CREATE_SCHEMA.type]: { schema: THUMBNAIL_CREATE_SCHEMA, policy: THUMBNAIL_CREATE_POLICY },
     [PAYOUT_EXECUTE_SCHEMA.type]: { schema: PAYOUT_EXECUTE_SCHEMA, policy: PAYOUT_EXECUTE_POLICY },
+    [PDF_GENERATE_SCHEMA.type]: { schema: PDF_GENERATE_SCHEMA, policy: PDF_GENERATE_POLICY },
 };
 
 /**
@@ -89,6 +105,8 @@ export function validateJobPayload(jobType: string, payload: any): void {
             } else if (expectedType === 'boolean' && actualType !== 'boolean') {
                 errors.push(`Invalid type for field ${field}: expected ${expectedType}, got ${actualType}`);
             } else if (expectedType === 'string' && actualType !== 'string') {
+                errors.push(`Invalid type for field ${field}: expected ${expectedType}, got ${actualType}`);
+            } else if (expectedType === 'object' && actualType !== 'object') {
                 errors.push(`Invalid type for field ${field}: expected ${expectedType}, got ${actualType}`);
             }
         }

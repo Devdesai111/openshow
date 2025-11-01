@@ -407,5 +407,22 @@ export class AgreementService {
 
     return { status: 'hashed', immutableHash, jobId, message };
   }
+
+  /** Worker-called method to update the final PDF asset ID on a fully signed agreement. */
+  public async updatePdfAssetId(agreementId: string, pdfAssetId: string): Promise<void> {
+    const agreementObjectId = new Types.ObjectId(agreementId);
+    
+    const result = await AgreementModel.updateOne(
+      { _id: agreementObjectId, status: 'signed' }, // Concurrency/State check
+      { $set: { pdfAssetId: new Types.ObjectId(pdfAssetId) } }
+    );
+    
+    if (result.modifiedCount === 0) {
+      throw new Error('AgreementNotSignedOrNotFound');
+    }
+
+    // PRODUCTION: Emit 'agreement.pdf.ready' event (Task 27 downloads unlock)
+    console.log(`[Event] Agreement ${agreementId} PDF asset ID updated to ${pdfAssetId}.`);
+  }
 }
 
