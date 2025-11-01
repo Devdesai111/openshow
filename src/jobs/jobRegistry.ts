@@ -52,6 +52,16 @@ const REINDEX_BATCH_SCHEMA: IJobSchema = {
     },
 };
 
+const BLOCKCHAIN_ANCHOR_SCHEMA: IJobSchema = {
+    type: 'blockchain.anchor',
+    required: ['agreementId', 'immutableHash', 'chain'],
+    properties: {
+        agreementId: 'string',
+        immutableHash: 'string',
+        chain: 'string', // e.g., 'polygon', 'ipfs'
+    },
+};
+
 // --- Job Policies (Concurrency/Retry Rules) ---
 const THUMBNAIL_CREATE_POLICY: IJobPolicy = {
     type: THUMBNAIL_CREATE_SCHEMA.type,
@@ -78,6 +88,12 @@ const REINDEX_BATCH_POLICY: IJobPolicy = {
     timeoutSeconds: 3600, // 1 hour for long batch processes
 };
 
+const BLOCKCHAIN_ANCHOR_POLICY: IJobPolicy = {
+    type: BLOCKCHAIN_ANCHOR_SCHEMA.type,
+    maxAttempts: 10, // High attempts due to network/gas failures
+    timeoutSeconds: 1800, // 30 minutes
+};
+
 // --- Registry Setup ---
 
 const JOB_REGISTRY: Record<string, { schema: IJobSchema, policy: IJobPolicy }> = {
@@ -85,6 +101,7 @@ const JOB_REGISTRY: Record<string, { schema: IJobSchema, policy: IJobPolicy }> =
     [PAYOUT_EXECUTE_SCHEMA.type]: { schema: PAYOUT_EXECUTE_SCHEMA, policy: PAYOUT_EXECUTE_POLICY },
     [PDF_GENERATE_SCHEMA.type]: { schema: PDF_GENERATE_SCHEMA, policy: PDF_GENERATE_POLICY },
     [REINDEX_BATCH_SCHEMA.type]: { schema: REINDEX_BATCH_SCHEMA, policy: REINDEX_BATCH_POLICY },
+    [BLOCKCHAIN_ANCHOR_SCHEMA.type]: { schema: BLOCKCHAIN_ANCHOR_SCHEMA, policy: BLOCKCHAIN_ANCHOR_POLICY },
 };
 
 /**

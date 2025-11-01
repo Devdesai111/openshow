@@ -424,5 +424,29 @@ export class AgreementService {
     // PRODUCTION: Emit 'agreement.pdf.ready' event (Task 27 downloads unlock)
     console.log(`[Event] Agreement ${agreementId} PDF asset ID updated to ${pdfAssetId}.`);
   }
+
+  /** Worker-called method to update the agreement with a successful anchoring transaction ID. */
+  public async updateAnchorTxId(agreementId: string, txId: string, chain: string): Promise<void> {
+    const agreementObjectId = new Types.ObjectId(agreementId);
+    
+    const update = {
+      $push: { 
+        blockchainAnchors: { txId, chain, createdAt: new Date() } // Append to array
+      },
+      // Optionally update status to permanently anchor the hash
+    };
+
+    const result = await AgreementModel.updateOne(
+      { _id: agreementObjectId },
+      update
+    );
+    
+    if (result.modifiedCount === 0) {
+      throw new Error('AgreementNotFound');
+    }
+
+    // PRODUCTION: Emit 'agreement.anchored' event
+    console.log(`[Event] Agreement ${agreementId} anchored on ${chain} with TXID: ${txId}.`);
+  }
 }
 

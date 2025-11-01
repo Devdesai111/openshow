@@ -39,6 +39,7 @@ export interface IAgreement {
   pdfAssetId?: Types.ObjectId; // Asset ID of the final signed PDF (Task 55)
   version: number;
   immutableHash?: string; // SHA256 of canonical payload + signatures
+  blockchainAnchors?: Array<{ txId: string; chain: string; createdAt: Date }>; // Blockchain transaction anchors (Task 57)
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -83,6 +84,11 @@ const AgreementSchema = new Schema<IAgreement>(
     pdfAssetId: { type: Schema.Types.ObjectId, ref: 'Asset' },
     version: { type: Number, default: 1 },
     immutableHash: { type: String },
+    blockchainAnchors: [{
+      txId: { type: String, required: true },
+      chain: { type: String, required: true },
+      createdAt: { type: Date, default: Date.now },
+    }],
   },
   { timestamps: true }
 );
