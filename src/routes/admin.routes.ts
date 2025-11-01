@@ -39,6 +39,7 @@ import {
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
+import { mfaEnforcement } from '../middleware/mfa.middleware';
 import { PERMISSIONS } from '../config/permissions';
 
 const router = Router();
@@ -48,10 +49,12 @@ const userManageAccess = [PERMISSIONS.USER_MANAGE_ALL, PERMISSIONS.ADMIN_DASHBOA
 // NOTE: All Admin routes are protected by the finance role check
 
 // GET /admin/payments/ledger - List all transactions (Task 39)
+// MFA Enforcement applied (Task 73)
 router.get(
   '/payments/ledger',
   authenticate,
   authorize(financeAccess),
+  mfaEnforcement, // Apply MFA middleware for Admin users
   adminLedgerValidation,
   listAdminLedgerController
 );

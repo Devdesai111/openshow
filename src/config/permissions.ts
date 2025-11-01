@@ -43,3 +43,13 @@ export const checkPermissions = (
 export const checkStatus = (userStatus: IUser['status']): boolean => {
   return userStatus === 'active';
 };
+
+/** Define high-privilege permissions that require MFA enforcement on access. */
+export const MFA_ENFORCED_PERMISSIONS = [
+  PERMISSIONS.ADMIN_DASHBOARD,
+  PERMISSIONS.FINANCE_MANAGE,
+  PERMISSIONS.USER_MANAGE_ALL,
+];
+
+/** Define roles that MUST have 2FA enabled for core function access (e.g., all Admins). */
+export const MFA_REQUIRED_ROLES: IUser['role'][] = ['admin'];

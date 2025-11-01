@@ -9,6 +9,7 @@ import { AuthSessionModel } from '../models/authSession.model';
 import { PasswordResetModel } from '../models/passwordReset.model';
 import { TwoFATempModel } from '../models/twoFATemp.model';
 import { env } from '../config/env';
+import { MFA_REQUIRED_ROLES } from '../config/permissions';
 
 // Token configuration
 const ACCESS_TOKEN_SECRET = env.ACCESS_TOKEN_SECRET;
@@ -195,8 +196,8 @@ export class AuthService {
   ): Promise<ITokenPair & { user: IUser }> {
     const { email, password, rememberMe } = data;
 
-    // 1. Find user, explicitly requesting password hash for comparison
-    const user = await UserModel.findOne({ email }).select('+hashedPassword');
+    // 1. Find user, explicitly requesting password hash, 2FA status, and role/status for comparison
+    const user = await UserModel.findOne({ email }).select('+hashedPassword twoFA role status');
     if (!user || !user.hashedPassword) {
       throw new Error('InvalidCredentials');
     }
@@ -212,15 +213,20 @@ export class AuthService {
       throw new Error('AccountSuspended');
     }
 
-    // 4. Update last seen time (minimal DB write)
+    // 4. MFA ENFORCEMENT CHECK (CRITICAL for Admin users)
+    if (MFA_REQUIRED_ROLES.includes(user.role) && (!user.twoFA || !user.twoFA.enabled)) {
+      throw new Error('MfaSetupRequired');
+    }
+
+    // 5. Update last seen time (minimal DB write)
     user.lastSeenAt = new Date();
     await user.save();
 
-    // 5. Generate tokens and save session
+    // 6. Generate tokens and save session
     const tokenPair = generateTokens(user);
     await saveRefreshToken(user._id as Types.ObjectId, tokenPair.refreshToken, req, rememberMe);
 
-    // 6. Return tokens and sanitized user object
+    // 7. Return tokens and sanitized user object
     const userObject = user.toObject({ getters: true, virtuals: true }) as IUser;
     delete userObject.hashedPassword;
 

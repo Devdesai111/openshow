@@ -202,6 +202,15 @@ export const loginController = async (req: Request, res: Response): Promise<void
         401
       );
     }
+    if (errorMessage === 'MfaSetupRequired') {
+      // New 403 response for MFA requirement
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'Two-Factor Authentication setup is required for this role.',
+        403
+      );
+    }
     if (errorMessage === 'AccountSuspended') {
       return ResponseBuilder.error(
         res,
