@@ -7,9 +7,12 @@ import { DiscoveryService } from '../services/discovery.service';
 import { JobService } from '../services/job.service';
 import { AuditService } from '../services/audit.service';
 import { ModerationService } from '../services/moderation.service';
+import { AdminService } from '../services/admin.service';
+import { UserModel } from '../models/user.model';
 import { updateRankingWeights, IRankingWeights } from '../config/rankingWeights';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
+import { IUser } from '../models/user.model';
 
 const paymentService = new PaymentService();
 const revenueService = new RevenueService();
@@ -17,6 +20,7 @@ const discoveryService = new DiscoveryService();
 const jobService = new JobService();
 const auditService = new AuditService();
 const moderationService = new ModerationService();
+const adminService = new AdminService();
 
 // --- Validation Middleware ---
 
@@ -376,6 +380,19 @@ export const takeActionValidation = [
   body('notes').isString().isLength({ min: 5 }).withMessage('Notes are required for action (min 5 chars).'),
 ];
 
+export const adminUserListValidation = [
+  query('status').optional().isIn(['active', 'pending', 'suspended', 'deleted']).withMessage('Invalid status filter.'),
+  query('role').optional().isIn(['creator', 'owner', 'admin']).withMessage('Invalid role filter.'),
+  query('q').optional().isString().withMessage('Search query must be a string.'),
+  query('page').optional().isInt({ min: 1 }).toInt(),
+  query('per_page').optional().isInt({ min: 1, max: 100 }).toInt(),
+];
+
+export const updateRoleValidation = [
+  param('userId').isMongoId().withMessage('Invalid User ID format.'),
+  body('newRole').isIn(['creator', 'owner', 'admin']).withMessage('Invalid role provided.'),
+];
+
 // --- Admin Audit Controller ---
 
 /** Writes an immutable audit log entry. POST /audit */
@@ -656,6 +673,108 @@ export const takeActionController = async (req: Request, res: Response): Promise
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error taking action.',
+      500
+    );
+  }
+};
+
+/** Lists all users. GET /admin/users */
+export const listAdminUsersController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const list = await adminService.listAllUsers(req.query);
+    return ResponseBuilder.success(res, list, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error listing users.',
+      500
+    );
+  }
+};
+
+/** Updates a user's role. PUT /admin/users/:userId/role */
+export const updateAdminUserRoleController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    if (!req.user || !req.user.sub) {
+      return ResponseBuilder.error(res, ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
+    const { userId } = req.params;
+    const { newRole } = req.body as { newRole?: string };
+    const adminId = req.user.sub;
+
+    if (!newRole || typeof newRole !== 'string') {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'New role is required.', 422);
+    }
+
+    // Get old role before update
+    const oldRole = await UserModel.findById(userId).select('role').lean();
+    const oldRoleValue = oldRole ? (oldRole as any).role : null;
+
+    const updatedUser = await adminService.updateUserRole(userId, newRole as IUser['role'], adminId);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        userId: updatedUser._id!.toString(),
+        oldRole: oldRoleValue,
+        newRole: newRole,
+        message: 'User role updated successfully.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'UserNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Target user account not found.', 404);
+    }
+    if (errorMessage === 'SelfDemotionForbidden') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.PERMISSION_DENIED,
+        'Admin cannot demote themselves from the admin role.',
+        403
+      );
+    }
+    if (errorMessage === 'UpdateFailed') {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.INTERNAL_SERVER_ERROR,
+        'Failed to update user role.',
+        500
+      );
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error updating user role.',
       500
     );
   }

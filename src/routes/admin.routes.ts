@@ -22,6 +22,10 @@ import {
   takeActionController,
   moderationQueueValidation,
   takeActionValidation,
+  listAdminUsersController,
+  updateAdminUserRoleController,
+  adminUserListValidation,
+  updateRoleValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -29,6 +33,7 @@ import { PERMISSIONS } from '../config/permissions';
 
 const router = Router();
 const financeAccess = [PERMISSIONS.FINANCE_MANAGE];
+const userManageAccess = [PERMISSIONS.USER_MANAGE_ALL, PERMISSIONS.ADMIN_DASHBOARD];
 
 // NOTE: All Admin routes are protected by the finance role check
 
@@ -140,6 +145,26 @@ router.post(
   authorize(financeAccess), // RBAC check: Admin/Moderator access
   takeActionValidation,
   takeActionController
+);
+
+// --- Admin User Management Endpoints (Task 64) ---
+
+// GET /admin/users - List all users (Full DTO)
+router.get(
+  '/users',
+  authenticate,
+  authorize(userManageAccess), // RBAC check: Admin access
+  adminUserListValidation,
+  listAdminUsersController
+);
+
+// PUT /admin/users/:userId/role - Update user's role
+router.put(
+  '/users/:userId/role',
+  authenticate,
+  authorize(userManageAccess), // RBAC check: Admin access
+  updateRoleValidation,
+  updateAdminUserRoleController
 );
 
 // ... Future Admin endpoints (reconciliation, manual ops) go here ...
