@@ -4,6 +4,9 @@ import { calculateRevenueSplit } from '../utils/revenueCalculator';
 import { PayoutBatchModel, IPayoutBatch, IPayoutItem } from '../models/payout.model';
 import { IAuthUser } from '../middleware/auth.middleware';
 import { getExponentialBackoffDelay, isRetryAllowed } from '../utils/retryPolicy';
+import { UserSettingsModel } from '../models/userSettings.model';
+import { PaymentAdapterFactory, PSPProvider } from '../paymentAdapters/adapter.factory';
+import { ReleaseInputDTO } from '../paymentAdapters/payment.interface';
 import { Types } from 'mongoose';
 import * as crypto from 'crypto';
 
@@ -526,6 +529,88 @@ export class RevenueService {
     console.warn(`[Audit] Payout ${payoutItemId} manually retried by ${requesterId} (Attempt ${nextAttempt}).`);
 
     return itemToUpdate;
+  }
+
+  /**
+   * Executes a single Payout Batch, calling the PSP adapter for each item.
+   * @param batchId - Payout batch ID to execute
+   * @returns Summary of execution.
+   * @throws {Error} - 'BatchNotFound'
+   */
+  public async executePayoutBatch(batchId: string): Promise<{ totalItems: number, totalSubmitted: number }> {
+    const batch = await PayoutBatchModel.findOne({ batchId });
+    if (!batch) { throw new Error('BatchNotFound'); }
+
+    // Get the provider from the batch or use default (should be set during batch creation)
+    // For now, we'll use the default provider
+    const adapter = PaymentAdapterFactory.getAdapter(PSPProvider.STRIPE);
+    let totalSubmitted = 0;
+    
+    for (let i = 0; i < batch.items.length; i++) {
+      const item = batch.items[i];
+      
+      // Skip if item is undefined
+      if (!item) {
+        continue;
+      }
+      
+      // 1. IDEMPOTENCY & STATE CHECK
+      if (item.status === 'paid' || item.status === 'processing') {
+        continue; // Skip already active/paid items
+      }
+      
+      // 2. Fetch Recipient Payout Details (KYC/Account)
+      const settings = await UserSettingsModel.findOne({ userId: item.userId })
+        .select('payoutMethod').lean();
+
+      if (!settings?.payoutMethod?.isVerified || !settings.payoutMethod.providerAccountId) {
+        // Failsafe/KYC Check: Mark as pending KYC and skip execution
+        const itemToUpdate = batch.items[i];
+        if (itemToUpdate) {
+          itemToUpdate.status = 'pending_kyc';
+          itemToUpdate.failureReason = 'Missing or unverified payout method/KYC.';
+        }
+        continue;
+      }
+
+      try {
+        // 3. CALL PSP Adapter (Release/Transfer/Payout)
+        const pspInput: ReleaseInputDTO = {
+          providerPaymentId: settings.payoutMethod.providerAccountId, // Target account (simplified)
+          amount: item.netAmount,
+          currency: batch.currency,
+          recipientId: item.userId.toString(),
+        };
+        
+        const pspOutput = await adapter.releaseEscrow(pspInput); // e.g., Stripe Capture/Transfer
+        
+        // 4. Update Item Status (Optimistic update to 'processing')
+        const itemToUpdate = batch.items[i];
+        if (itemToUpdate) {
+          itemToUpdate.status = 'processing';
+          itemToUpdate.providerPayoutId = pspOutput.providerTransferId;
+          totalSubmitted++;
+        }
+
+        // PRODUCTION: Emit 'payout.item.submitted'
+        console.log(`[Event] Payout ${item._id} submitted to PSP: ${pspOutput.providerTransferId}`);
+
+      } catch (error: any) {
+        // 5. Handle PSP Failure (e.g., PSP network error)
+        const itemToUpdate = batch.items[i];
+        if (itemToUpdate) {
+          itemToUpdate.status = 'failed';
+          itemToUpdate.failureReason = `PSP error on submission: ${error.message}`;
+        }
+        // Job will be retried by the next scheduled run
+        console.error(`[Payout Error] Payout ${item._id} failed submission. Reason: ${error.message}`);
+      }
+    }
+
+    // 6. Save the entire updated batch document
+    await batch.save();
+
+    return { totalItems: batch.items.length, totalSubmitted };
   }
 }
 
