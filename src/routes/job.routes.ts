@@ -1,6 +1,14 @@
 // src/routes/job.routes.ts
 import { Router } from 'express';
-import { enqueueController, leaseController, enqueueValidation, leaseValidation } from '../controllers/job.controller';
+import { 
+    enqueueController, 
+    leaseController, 
+    reportSuccessController,
+    reportFailureController,
+    enqueueValidation, 
+    leaseValidation,
+    reportParamValidation
+} from '../controllers/job.controller';
 import { authenticate } from '../middleware/auth.middleware'; 
 import { authorize } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../config/permissions';
@@ -29,7 +37,25 @@ router.get(
     leaseController
 );
 
-// NOTE: Future endpoints (succeed, fail, status, requeue) will be added here.
+// --- Worker Report Endpoints (Task 54) ---
+
+// POST /jobs/:jobId/succeed - Worker reports success
+router.post(
+    '/:jobId/succeed',
+    authenticate,
+    authorize(adminAccess),
+    reportParamValidation,
+    reportSuccessController
+);
+
+// POST /jobs/:jobId/fail - Worker reports failure
+router.post(
+    '/:jobId/fail',
+    authenticate,
+    authorize(adminAccess),
+    reportParamValidation,
+    reportFailureController
+);
 
 export default router;
 

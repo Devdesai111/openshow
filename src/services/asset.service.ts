@@ -535,5 +535,21 @@ export class AssetService {
       },
     };
   }
+
+  /** Worker-called method to update the source asset after processing (e.g., thumbnail). */
+  public async markAssetProcessed(sourceAssetId: string, derivedAssetId: string): Promise<void> {
+    const sourceId = new Types.ObjectId(sourceAssetId);
+    
+    await AssetModel.updateOne(
+      { _id: sourceId },
+      { 
+        $set: { 
+          processed: true, 
+          thumbnailAssetId: new Types.ObjectId(derivedAssetId) 
+        } 
+      }
+    );
+    console.log(`[Event] Asset ${sourceAssetId} marked processed with thumbnail ${derivedAssetId}.`);
+  }
 }
 

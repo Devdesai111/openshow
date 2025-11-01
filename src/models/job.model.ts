@@ -15,6 +15,7 @@ export interface IJob {
   leaseExpiresAt?: Date; // Time worker must finish or renew
   workerId?: string;
   lastError?: { code?: string; message?: string };
+  result?: any; // Result payload on success
   createdBy?: Types.ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
@@ -32,6 +33,7 @@ const JobSchema = new Schema<IJob>({
   leaseExpiresAt: { type: Date, index: true },
   workerId: { type: String },
   lastError: { type: Schema.Types.Mixed },
+  result: { type: Schema.Types.Mixed },
   createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 

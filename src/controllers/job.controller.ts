@@ -1,6 +1,6 @@
 // src/controllers/job.controller.ts
 import { Request, Response } from 'express';
-import { body, header, query, validationResult } from 'express-validator';
+import { body, header, query, param, validationResult } from 'express-validator';
 import { JobService } from '../services/job.service';
 import { ResponseBuilder } from '../utils/response-builder';
 import { ErrorCode } from '../types/error-dtos';
@@ -20,6 +20,16 @@ export const leaseValidation = [
     header('x-worker-id').isString().isLength({ min: 5 }).withMessage('X-Worker-Id header is required.'),
     query('type').optional().isString().withMessage('Job type filter must be a string.'),
     query('limit').optional().isInt({ min: 1, max: 10 }).toInt().default(1),
+];
+
+export const reportValidation = [
+    body('result').optional().isObject().withMessage('Result must be an object for success.'),
+    body('error').optional().isObject().withMessage('Error must be an object for failure.'),
+];
+
+export const reportParamValidation = [
+    param('jobId').isString().withMessage('Job ID is required.'),
+    header('x-worker-id').isString().isLength({ min: 5 }).withMessage('X-Worker-Id header is required.'),
 ];
 
 
@@ -131,6 +141,120 @@ export const leaseController = async (req: Request, res: Response): Promise<void
             res,
             ErrorCode.INTERNAL_SERVER_ERROR,
             'Internal server error leasing jobs.',
+            500
+        );
+    }
+};
+
+/** Reports job success. POST /jobs/:id/succeed */
+export const reportSuccessController = async (req: Request, res: Response): Promise<void> => {
+    // 1. Input Validation
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return ResponseBuilder.validationError(
+            res,
+            errors.array().map(err => ({
+                field: err.type === 'field' ? (err as any).path : undefined,
+                reason: err.msg,
+                value: err.type === 'field' ? (err as any).value : undefined,
+            }))
+        );
+    }
+    
+    try {
+        const { jobId } = req.params;
+        const workerId = req.header('x-worker-id')!;
+
+        if (!jobId) {
+            return ResponseBuilder.error(
+                res,
+                ErrorCode.VALIDATION_ERROR,
+                'Job ID is required.',
+                422
+            );
+        }
+
+        const updatedJob = await jobService.reportJobSuccess(jobId, workerId, req.body.result || {});
+
+        return ResponseBuilder.success(res, {
+            status: 'succeeded',
+            jobId: updatedJob.jobId
+        }, 200);
+    } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        
+        if (errorMessage === 'JobNotLeasedOrNotFound') {
+            return ResponseBuilder.error(
+                res,
+                ErrorCode.CONFLICT,
+                'Job not found or worker is not the current lease holder.',
+                409
+            );
+        }
+        
+        console.error('Error reporting job success:', errorMessage);
+        return ResponseBuilder.error(
+            res,
+            ErrorCode.INTERNAL_SERVER_ERROR,
+            'Internal server error reporting success.',
+            500
+        );
+    }
+};
+
+/** Reports job failure. POST /jobs/:id/fail */
+export const reportFailureController = async (req: Request, res: Response): Promise<void> => {
+    // 1. Input Validation
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return ResponseBuilder.validationError(
+            res,
+            errors.array().map(err => ({
+                field: err.type === 'field' ? (err as any).path : undefined,
+                reason: err.msg,
+                value: err.type === 'field' ? (err as any).value : undefined,
+            }))
+        );
+    }
+    
+    try {
+        const { jobId } = req.params;
+        const workerId = req.header('x-worker-id')!;
+
+        if (!jobId) {
+            return ResponseBuilder.error(
+                res,
+                ErrorCode.VALIDATION_ERROR,
+                'Job ID is required.',
+                422
+            );
+        }
+
+        const updatedJob = await jobService.reportJobFailure(jobId, workerId, req.body.error || {});
+
+        return ResponseBuilder.success(res, {
+            status: updatedJob.status,
+            jobId: updatedJob.jobId,
+            nextRunAt: updatedJob.nextRunAt?.toISOString(),
+            attempt: updatedJob.attempt,
+        }, 200);
+    } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        
+        if (errorMessage === 'JobNotLeasedOrNotFound') {
+            return ResponseBuilder.error(
+                res,
+                ErrorCode.CONFLICT,
+                'Job not found or worker is not the current lease holder.',
+                409
+            );
+        }
+        
+        console.error('Error reporting job failure:', errorMessage);
+        return ResponseBuilder.error(
+            res,
+            ErrorCode.INTERNAL_SERVER_ERROR,
+            'Internal server error reporting failure.',
             500
         );
     }

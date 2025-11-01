@@ -2,6 +2,7 @@
 import { JobModel, IJob } from '../models/job.model';
 import { Types } from 'mongoose';
 import { validateJobPayload, getJobPolicy } from '../jobs/jobRegistry';
+import { getExponentialBackoffDelay } from '../utils/retryPolicy';
 
 const DEFAULT_LEASE_TIME_S = 300; // 5 minutes
 
@@ -113,6 +114,68 @@ export class JobService {
         console.log(`Worker ${workerId} leased ${leasedJobs.length} jobs.`);
         
         return leasedJobs;
+    }
+
+    /** Reports job success and updates the job status atomically. */
+    public async reportJobSuccess(jobId: string, workerId: string, result: any): Promise<IJob> {
+        // Find job with concurrency protection (leased by this worker)
+        const updatedJob = await JobModel.findOneAndUpdate(
+            { jobId, workerId, status: 'leased' },
+            {
+                $set: {
+                    status: 'succeeded',
+                    result: result,
+                    leaseExpiresAt: new Date(), // Release lease
+                }
+            },
+            { new: true }
+        ).lean() as IJob;
+        
+        if (!updatedJob) { throw new Error('JobNotLeasedOrNotFound'); }
+        
+        // PRODUCTION: Emit 'job.succeeded' event
+        console.log(`[Event] Job ${jobId} succeeded.`);
+        
+        return updatedJob;
+    }
+
+    /** Reports job failure, calculates next retry time, and updates status. */
+    public async reportJobFailure(jobId: string, workerId: string, error: any): Promise<IJob> {
+        const job = await JobModel.findOne({ jobId, workerId, status: 'leased' });
+        if (!job) { throw new Error('JobNotLeasedOrNotFound'); }
+
+        const nextAttempt = job.attempt + 1;
+        
+        if (nextAttempt > job.maxAttempts) {
+            // Permanent failure: Move to DLQ
+            job.status = 'dlq';
+            // PRODUCTION: Trigger Admin Escalation
+            console.error(`[Job DLQ] Job ${jobId} failed after ${nextAttempt} attempts.`);
+        } else {
+            // Retry: Calculate next run time
+            const delay = getExponentialBackoffDelay(nextAttempt);
+            if (delay === -1) {
+                // Max attempts reached
+                job.status = 'dlq';
+                console.error(`[Job DLQ] Job ${jobId} failed after max attempts.`);
+            } else {
+                job.status = 'queued';
+                job.nextRunAt = new Date(Date.now() + delay);
+                console.warn(`[Job Retry] Job ${jobId} failed. Next run: ${job.nextRunAt.toISOString()}`);
+            }
+            job.leaseExpiresAt = undefined; // Clear lease
+        }
+        
+        // Update error metadata
+        job.lastError = { code: 'worker_fail', message: error?.message || 'Unknown error' };
+        job.workerId = undefined; // Clear worker ID
+        
+        const updatedJob = await job.save();
+
+        // PRODUCTION: Emit 'job.failed' event
+        console.log(`[Event] Job ${jobId} failed (attempt ${nextAttempt}).`);
+
+        return updatedJob.toObject() as IJob;
     }
 }
 

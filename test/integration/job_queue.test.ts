@@ -520,5 +520,216 @@ describe('Jobs & Worker Queue Integration Tests', () => {
       expect(job!.attempt).toBe(2); // Incremented on reclaim
     });
   });
+
+  describe('POST /jobs/:jobId/succeed - Report Job Success', () => {
+    let leasedJobId: string;
+    let workerId: string;
+
+    beforeEach(async () => {
+      // Create and lease a job for success tests
+      await request(app)
+        .post('/jobs')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          type: 'thumbnail.create',
+          payload: { assetId: 'asset_123', versionNumber: 1 },
+        });
+
+      workerId = 'worker_success';
+      const leaseResponse = await request(app)
+        .get('/jobs/lease')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-Worker-Id', workerId)
+        .query({ limit: 1 });
+
+      leasedJobId = leaseResponse.body.jobs[0].jobId;
+    });
+
+    it('T54.1 - should successfully report job success (200 OK)', async () => {
+      // Arrange
+      const payload = {
+        result: { newAssetId: 'derived_asset_123' },
+      };
+
+      // Act
+      const response = await request(app)
+        .post(`/jobs/${leasedJobId}/succeed`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-Worker-Id', workerId)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('status', 'succeeded');
+      expect(response.body).toHaveProperty('jobId', leasedJobId);
+
+      // Verify job status in database
+      const job = await JobModel.findOne({ jobId: leasedJobId });
+      expect(job).toBeDefined();
+      expect(job!.status).toBe('succeeded');
+      expect(job!.result).toBeDefined();
+    });
+
+    it('T54.4 - should return 409 for lease conflict (wrong worker)', async () => {
+      // Arrange: Wrong worker ID
+      const wrongWorkerId = 'wrong_worker';
+      const payload = {
+        result: { newAssetId: 'derived_asset_123' },
+      };
+
+      // Act
+      const response = await request(app)
+        .post(`/jobs/${leasedJobId}/succeed`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-Worker-Id', wrongWorkerId)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(409);
+      expect(response.body.error).toHaveProperty('code', 'conflict');
+      expect(response.body.error.message).toContain('lease holder');
+    });
+
+    it('should require authentication', async () => {
+      // Act
+      const response = await request(app)
+        .post(`/jobs/${leasedJobId}/succeed`)
+        .set('X-Worker-Id', workerId)
+        .send({ result: {} });
+
+      // Assert
+      expect(response.status).toBe(401);
+      expect(response.body.error).toHaveProperty('code', 'no_token');
+    });
+
+    it('should require X-Worker-Id header', async () => {
+      // Act
+      const response = await request(app)
+        .post(`/jobs/${leasedJobId}/succeed`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ result: {} });
+
+      // Assert
+      expect(response.status).toBe(422);
+      expect(response.body.error).toHaveProperty('code', 'validation_error');
+    });
+  });
+
+  describe('POST /jobs/:jobId/fail - Report Job Failure', () => {
+    let leasedJobId: string;
+    let workerId: string;
+
+    beforeEach(async () => {
+      // Create and lease a job for failure tests
+      await request(app)
+        .post('/jobs')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          type: 'thumbnail.create',
+          payload: { assetId: 'asset_123', versionNumber: 1 },
+        });
+
+      workerId = 'worker_fail';
+      const leaseResponse = await request(app)
+        .get('/jobs/lease')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-Worker-Id', workerId)
+        .query({ limit: 1 });
+
+      leasedJobId = leaseResponse.body.jobs[0].jobId;
+    });
+
+    it('T54.2 - should successfully report job failure and requeue for retry', async () => {
+      // Arrange: Job with attempt < maxAttempts (maxAttempts=3 for thumbnail.create)
+      const payload = {
+        error: { message: 'Transient error' },
+      };
+
+      // Act
+      const response = await request(app)
+        .post(`/jobs/${leasedJobId}/fail`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-Worker-Id', workerId)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('status', 'queued');
+      expect(response.body).toHaveProperty('jobId', leasedJobId);
+      expect(response.body).toHaveProperty('nextRunAt');
+      expect(response.body).toHaveProperty('attempt');
+
+      // Verify job status in database
+      const job = await JobModel.findOne({ jobId: leasedJobId });
+      expect(job).toBeDefined();
+      expect(job!.status).toBe('queued');
+      expect(job!.attempt).toBe(1); // Incremented on lease
+      expect(job!.nextRunAt).toBeDefined();
+      expect(job!.nextRunAt!.getTime()).toBeGreaterThan(Date.now()); // Should be in future
+      expect(job!.lastError).toBeDefined();
+      expect(job!.workerId).toBeUndefined(); // Lease cleared
+    });
+
+    it('T54.3 - should move to DLQ when maxAttempts reached', async () => {
+      // Arrange: Job that has failed maxAttempts-1 times (attempt = maxAttempts)
+      const job = await JobModel.findOne({ jobId: leasedJobId });
+      if (job) {
+        job.attempt = job.maxAttempts; // Set to maxAttempts
+        await job.save();
+      }
+
+      const payload = {
+        error: { message: 'Permanent error' },
+      };
+
+      // Act
+      const response = await request(app)
+        .post(`/jobs/${leasedJobId}/fail`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-Worker-Id', workerId)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('status', 'dlq');
+      expect(response.body).toHaveProperty('jobId', leasedJobId);
+
+      // Verify job moved to DLQ
+      const updatedJob = await JobModel.findOne({ jobId: leasedJobId });
+      expect(updatedJob).toBeDefined();
+      expect(updatedJob!.status).toBe('dlq');
+    });
+
+    it('should return 409 for lease conflict (wrong worker)', async () => {
+      // Arrange: Wrong worker ID
+      const wrongWorkerId = 'wrong_worker';
+      const payload = {
+        error: { message: 'Error' },
+      };
+
+      // Act
+      const response = await request(app)
+        .post(`/jobs/${leasedJobId}/fail`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('X-Worker-Id', wrongWorkerId)
+        .send(payload);
+
+      // Assert
+      expect(response.status).toBe(409);
+      expect(response.body.error).toHaveProperty('code', 'conflict');
+    });
+
+    it('should require authentication', async () => {
+      // Act
+      const response = await request(app)
+        .post(`/jobs/${leasedJobId}/fail`)
+        .set('X-Worker-Id', workerId)
+        .send({ error: {} });
+
+      // Assert
+      expect(response.status).toBe(401);
+      expect(response.body.error).toHaveProperty('code', 'no_token');
+    });
+  });
 });
 
