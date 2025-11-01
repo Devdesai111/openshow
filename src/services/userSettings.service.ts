@@ -1,7 +1,10 @@
 // src/services/userSettings.service.ts
 import { UserSettingsModel, IUserSettings, INotificationPrefs, IPayoutMethod } from '../models/userSettings.model';
 import { UserModel, IPushToken } from '../models/user.model';
+import { AuditService } from './audit.service';
 import { Types } from 'mongoose';
+
+const auditService = new AuditService();
 
 // Default values for new user upsert
 const DEFAULT_USER_SETTINGS: Omit<IUserSettings, '_id' | 'userId' | 'createdAt' | 'updatedAt'> = {
@@ -19,6 +22,13 @@ interface IPushTokenRegisterDTO {
   token: string;
   deviceId: string;
   provider: IPushToken['provider'];
+}
+
+// DTO for payout status updates (Admin only)
+interface IPayoutStatusUpdateDTO {
+  isVerified: boolean;
+  providerAccountId: string;
+  reason: string;
 }
 
 export class UserSettingsService {
@@ -179,6 +189,71 @@ export class UserSettingsService {
 
     // PRODUCTION: Emit 'user.pushToken.deleted' event
     console.warn(`[Event] User ${requesterId} deleted push token.`);
+  }
+
+  /**
+   * Admin function to manually update a user's payout status (KYC/Verification override).
+   * @param targetUserId - Target user ID
+   * @param adminId - Admin user ID
+   * @param data - Payout status update data
+   * @returns Updated user settings
+   * @throws {Error} 'UpdateFailed'
+   */
+  public async updatePayoutStatus(
+    targetUserId: string,
+    adminId: string,
+    data: IPayoutStatusUpdateDTO
+  ): Promise<IUserSettings> {
+    const targetObjectId = new Types.ObjectId(targetUserId);
+
+    // 0. Validate user exists first
+    const userExists = await UserModel.exists({ _id: targetObjectId });
+    if (!userExists) {
+      throw new Error('UserNotFound');
+    }
+
+    // 1. Execute Update (Uses upsert=true to ensure settings exist)
+    const updatedSettings = await UserSettingsModel.findOneAndUpdate(
+      { userId: targetObjectId },
+      {
+        $set: {
+          payoutMethod: {
+            type: 'stripe_connect', // Default type when creating from admin
+            isVerified: data.isVerified,
+            providerAccountId: data.providerAccountId,
+            details: {}, // Empty details (sensitive)
+          },
+        },
+      },
+      { new: true, upsert: true }
+    ).lean() as IUserSettings;
+
+    if (!updatedSettings) {
+      throw new Error('UpdateFailed');
+    }
+
+    // 2. Audit Log (CRITICAL)
+    await auditService.logAuditEntry({
+      resourceType: 'user_payout',
+      resourceId: targetUserId,
+      action: data.isVerified ? 'payout.kyc_verified' : 'payout.kyc_unverified',
+      actorId: adminId,
+      actorRole: 'admin',
+      details: {
+        isVerified: data.isVerified,
+        providerAccountId: data.providerAccountId,
+        reason: data.reason,
+      },
+    });
+
+    // 3. Return DTO (Redacted Details)
+    const settingsDTO = { ...updatedSettings };
+    // Don't return sensitive payoutMethod details
+    if ((settingsDTO as any).payoutMethod) {
+      delete (settingsDTO as any).payoutMethod.details;
+    }
+
+    return settingsDTO;
   }
 }
 

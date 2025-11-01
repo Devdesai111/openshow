@@ -8,6 +8,7 @@ import { JobService } from '../services/job.service';
 import { AuditService } from '../services/audit.service';
 import { ModerationService } from '../services/moderation.service';
 import { AdminService } from '../services/admin.service';
+import { UserSettingsService } from '../services/userSettings.service';
 import { UserModel } from '../models/user.model';
 import { updateRankingWeights, IRankingWeights } from '../config/rankingWeights';
 import { ResponseBuilder } from '../utils/response-builder';
@@ -21,6 +22,7 @@ const jobService = new JobService();
 const auditService = new AuditService();
 const moderationService = new ModerationService();
 const adminService = new AdminService();
+const userSettingsService = new UserSettingsService();
 
 // --- Validation Middleware ---
 
@@ -413,6 +415,13 @@ export const financeReportValidation = [
   query('export').optional().isBoolean().withMessage('Export must be boolean.'),
 ];
 
+export const updatePayoutStatusValidation = [
+  param('userId').isMongoId().withMessage('Invalid User ID format.').bail(),
+  body('isVerified').isBoolean().withMessage('isVerified flag is required.'),
+  body('providerAccountId').isString().isLength({ min: 5 }).withMessage('Provider Account ID is required (min 5 chars).'),
+  body('reason').isString().isLength({ min: 10 }).withMessage('Reason for action is required (min 10 chars).'),
+];
+
 // --- Admin Audit Controller ---
 
 /** Writes an immutable audit log entry. POST /audit */
@@ -662,7 +671,7 @@ export const takeActionController = async (req: Request, res: Response): Promise
     const typedAction = action as 'takedown' | 'suspend_user' | 'warn' | 'no_action' | 'escalate';
     const typedNotes = notes as string;
 
-    const updatedRecord = await moderationService.takeAction(modId, adminId, typedAction, typedNotes);
+    const updatedRecord = await moderationService.takeAction(modId!, adminId, typedAction, typedNotes);
 
     return ResponseBuilder.success(
       res,
@@ -746,7 +755,7 @@ export const updateAdminUserRoleController = async (req: Request, res: Response)
 
     const { userId } = req.params;
     const { newRole } = req.body as { newRole?: string };
-    const adminId = req.user.sub;
+    const adminId = req.user.sub!;
 
     if (!newRole || typeof newRole !== 'string') {
       return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'New role is required.', 422);
@@ -756,7 +765,7 @@ export const updateAdminUserRoleController = async (req: Request, res: Response)
     const oldRole = await UserModel.findById(userId).select('role').lean();
     const oldRoleValue = oldRole ? (oldRole as any).role : null;
 
-    const updatedUser = await adminService.updateUserRole(userId, newRole as IUser['role'], adminId);
+    const updatedUser = await adminService.updateUserRole(userId!, newRole as IUser['role'], adminId);
 
     return ResponseBuilder.success(
       res,
@@ -847,7 +856,7 @@ export const resolveDisputeController = async (req: Request, res: Response): Pro
     }
 
     const { disputeId } = req.params;
-    const adminId = req.user.sub;
+    const adminId = req.user.sub!;
     const { resolution, releaseAmount, refundAmount, notes } = req.body as {
       resolution?: string;
       releaseAmount?: number;
@@ -866,7 +875,7 @@ export const resolveDisputeController = async (req: Request, res: Response): Pro
       notes,
     };
 
-    const updatedDispute = await adminService.resolveDispute(disputeId, adminId, resolutionData);
+    const updatedDispute = await adminService.resolveDispute(disputeId!, adminId, resolutionData);
 
     return ResponseBuilder.success(
       res,
@@ -949,6 +958,84 @@ export const getFinanceReportController = async (req: Request, res: Response): P
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error generating report.',
+      500
+    );
+  }
+};
+
+/** Admin updates a user's payout status/KYC. PUT /admin/users/:userId/payout-status */
+export const updatePayoutStatusController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    if (!req.user || !req.user.sub) {
+      return ResponseBuilder.error(res, ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
+    const targetUserId = req.params.userId;
+    const adminId = req.user.sub!;
+
+    const { isVerified, providerAccountId, reason } = req.body as {
+      isVerified?: boolean;
+      providerAccountId?: string;
+      reason?: string;
+    };
+
+    if (
+      isVerified === undefined ||
+      typeof isVerified !== 'boolean' ||
+      !providerAccountId ||
+      !reason ||
+      typeof providerAccountId !== 'string' ||
+      typeof reason !== 'string'
+    ) {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'isVerified, providerAccountId, and reason are required.', 422);
+    }
+
+    const updatedSettings = await userSettingsService.updatePayoutStatus(
+      targetUserId!,
+      adminId,
+      {
+        isVerified,
+        providerAccountId: providerAccountId as string,
+        reason: reason as string,
+      }
+    );
+
+    return ResponseBuilder.success(
+      res,
+      {
+        userId: targetUserId,
+        isVerified: updatedSettings.payoutMethod?.isVerified,
+        providerAccountId: updatedSettings.payoutMethod?.providerAccountId,
+        message: `Payout status updated to verified=${updatedSettings.payoutMethod?.isVerified}.`,
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'UserNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Target user account not found.', 404);
+    }
+    if (errorMessage === 'UpdateFailed') {
+      return ResponseBuilder.error(res, ErrorCode.INTERNAL_SERVER_ERROR, 'User settings update failed.', 500);
+    }
+
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error updating payout status.',
       500
     );
   }

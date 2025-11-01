@@ -6,12 +6,12 @@ import { PaymentTransactionModel } from '../models/paymentTransaction.model';
 import { PayoutBatchModel } from '../models/payout.model';
 import { AuditService } from './audit.service';
 import { PaymentService } from './payment.service';
-import { JobService } from './job.service';
+// import { JobService } from './job.service'; // TODO: Will be used in future Task 68 export.finance job
 import { Types } from 'mongoose';
 
 const auditService = new AuditService();
 const paymentService = new PaymentService();
-const jobService = new JobService();
+// const jobService = new JobService(); // TODO: Will be used in future Task 68 export.finance job
 
 interface IAdminQueryFilters {
   status?: string;
@@ -19,6 +19,19 @@ interface IAdminQueryFilters {
   q?: string;
   page?: number | string;
   per_page?: number | string;
+}
+
+interface IResolveDisputeDTO {
+  resolution: 'release' | 'refund' | 'split' | 'deny';
+  releaseAmount?: number;
+  refundAmount?: number;
+  notes: string;
+}
+
+interface IFinanceReportFilters {
+  from: Date;
+  to: Date;
+  export?: boolean;
 }
 
 export class AdminService {
@@ -60,7 +73,6 @@ export class AdminService {
       fullName: user.fullName,
       role: user.role,
       status: user.status,
-      verified: user.verified,
       createdAt: user.createdAt!.toISOString(),
       updatedAt: user.updatedAt!.toISOString(),
     }));
@@ -117,13 +129,6 @@ export class AdminService {
 
     // 3. Return updated DTO (sanitized)
     return updatedUser;
-  }
-
-  interface IResolveDisputeDTO {
-    resolution: 'release' | 'refund' | 'split' | 'deny';
-    releaseAmount?: number;
-    refundAmount?: number;
-    notes: string;
   }
 
   /** Admin function to retrieve the dispute queue. */
@@ -273,12 +278,6 @@ export class AdminService {
     });
 
     return updatedDispute.toObject() as IDisputeRecord;
-  }
-
-  interface IFinanceReportFilters {
-    from: Date;
-    to: Date;
-    export?: boolean;
   }
 
   /** Generates an aggregated financial report for a given period. */

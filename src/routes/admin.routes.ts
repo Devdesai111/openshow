@@ -32,6 +32,8 @@ import {
   resolveDisputeValidation,
   getFinanceReportController,
   financeReportValidation,
+  updatePayoutStatusController,
+  updatePayoutStatusValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -202,6 +204,17 @@ router.get(
   authorize(financeAccess), // RBAC check: Finance admin access
   financeReportValidation,
   getFinanceReportController
+);
+
+// --- Admin Payout/KYC Management (Task 68) ---
+
+// PUT /admin/users/:userId/payout-status - Admin manual verification/linking
+router.put(
+  '/users/:userId/payout-status',
+  authenticate,
+  authorize(financeAccess), // RBAC check: Finance admin access
+  updatePayoutStatusValidation,
+  updatePayoutStatusController
 );
 
 // ... Future Admin endpoints (reconciliation, manual ops) go here ...
