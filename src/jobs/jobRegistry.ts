@@ -73,6 +73,15 @@ const EXPORT_AUDIT_SCHEMA: IJobSchema = {
     },
 };
 
+const AUDIT_SNAPSHOT_SCHEMA: IJobSchema = {
+    type: 'audit.snapshot',
+    required: ['from', 'to'],
+    properties: {
+        from: 'string',
+        to: 'string',
+    },
+};
+
 // --- Job Policies (Concurrency/Retry Rules) ---
 const THUMBNAIL_CREATE_POLICY: IJobPolicy = {
     type: THUMBNAIL_CREATE_SCHEMA.type,
@@ -111,6 +120,12 @@ const EXPORT_AUDIT_POLICY: IJobPolicy = {
     timeoutSeconds: 3600, // 1 hour for large exports
 };
 
+const AUDIT_SNAPSHOT_POLICY: IJobPolicy = {
+    type: AUDIT_SNAPSHOT_SCHEMA.type,
+    maxAttempts: 3,
+    timeoutSeconds: 3600, // 1 hour for major snapshots
+};
+
 // --- Registry Setup ---
 
 const JOB_REGISTRY: Record<string, { schema: IJobSchema, policy: IJobPolicy }> = {
@@ -120,6 +135,7 @@ const JOB_REGISTRY: Record<string, { schema: IJobSchema, policy: IJobPolicy }> =
     [REINDEX_BATCH_SCHEMA.type]: { schema: REINDEX_BATCH_SCHEMA, policy: REINDEX_BATCH_POLICY },
     [BLOCKCHAIN_ANCHOR_SCHEMA.type]: { schema: BLOCKCHAIN_ANCHOR_SCHEMA, policy: BLOCKCHAIN_ANCHOR_POLICY },
     [EXPORT_AUDIT_SCHEMA.type]: { schema: EXPORT_AUDIT_SCHEMA, policy: EXPORT_AUDIT_POLICY },
+    [AUDIT_SNAPSHOT_SCHEMA.type]: { schema: AUDIT_SNAPSHOT_SCHEMA, policy: AUDIT_SNAPSHOT_POLICY },
 };
 
 /**

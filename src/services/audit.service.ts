@@ -173,5 +173,30 @@ export class AuditService {
 
     return { jobId: job.jobId };
   }
+
+  /** Worker-called method to mark a batch of audit logs as immutable after external snapshot. */
+  public async updateLogImmutability(logIds: Types.ObjectId[], snapshotAssetId: string, signedHash: string): Promise<void> {
+    // 1. Mark Logs as Immutable
+    const result = await AuditLogModel.updateMany(
+      { _id: { $in: logIds }, immutable: false },
+      { $set: { immutable: true } }
+    );
+
+    // 2. Audit Log (Record the manifest/snapshot creation itself)
+    await this.logAuditEntry({
+      resourceType: 'audit_snapshot',
+      resourceId: '000000000000000000000002', // System resource ID
+      action: 'snapshot.created',
+      actorId: '000000000000000000000001', // System user
+      actorRole: 'system',
+      details: {
+        snapshotAssetId,
+        recordCount: result.modifiedCount,
+        signedHash,
+      },
+    });
+
+    console.log(`[Audit] ${result.modifiedCount} logs marked immutable. Snapshot: ${snapshotAssetId}.`);
+  }
 }
 
