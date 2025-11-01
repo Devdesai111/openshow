@@ -18,6 +18,7 @@ import webhookRoutes from './routes/webhook.routes';
 import adminRoutes from './routes/admin.routes';
 import userSettingsRoutes from './routes/userSettings.routes';
 import utilityRoutes from './routes/utility.routes';
+import jobRoutes from './routes/job.routes';
 
 const app: Application = express();
 
@@ -44,6 +45,7 @@ app.use('/payments', paymentRoutes); // Payment intents and checkout routes (Tas
 app.use('/webhooks', webhookRoutes); // Payment webhook routes (Task 35)
 app.use('/admin', adminRoutes); // Admin financial oversight routes (Task 39)
 app.use('/settings', userSettingsRoutes); // User settings routes (Task 44)
+app.use('/jobs', jobRoutes); // Jobs & Worker Queue routes (Task 52)
 app.use('/', utilityRoutes); // Health and metrics at root level
 
 // Start server
