@@ -14,6 +14,10 @@ import {
   jobQueueValidation,
   logAuditController,
   logAuditValidation,
+  queryAuditLogsController,
+  exportAuditLogsController,
+  auditQueryValidation,
+  auditExportValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -92,6 +96,26 @@ router.post(
   authorize(financeAccess), // RBAC check: System/Admin access only
   logAuditValidation,
   logAuditController
+);
+
+// --- Admin Audit Log Query & Export Endpoints (Task 61) ---
+
+// GET /admin/audit-logs - Query audit log ledger
+router.get(
+  '/audit-logs',
+  authenticate,
+  authorize(financeAccess), // RBAC check
+  auditQueryValidation,
+  queryAuditLogsController
+);
+
+// POST /admin/audit-logs/export - Initiate audit log export job
+router.post(
+  '/audit-logs/export',
+  authenticate,
+  authorize(financeAccess), // RBAC check
+  auditExportValidation,
+  exportAuditLogsController
 );
 
 // ... Future Admin endpoints (moderation, reconciliation, manual ops) go here ...

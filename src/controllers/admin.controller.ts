@@ -338,6 +338,21 @@ export const logAuditValidation = [
   body('details').isObject().withMessage('Details object is required.'),
 ];
 
+export const auditQueryValidation = [
+  query('from').optional().isISO8601().withMessage('From date must be valid ISO 8601.'),
+  query('to').optional().isISO8601().withMessage('To date must be valid ISO 8601.'),
+  query('action').optional().isString().withMessage('Action filter must be a string.'),
+  query('resourceType').optional().isString().withMessage('Resource type filter must be a string.'),
+  query('resourceId').optional().isMongoId().withMessage('Resource ID must be a valid Mongo ID.'),
+  query('page').optional().isInt({ min: 1 }).toInt(),
+  query('per_page').optional().isInt({ min: 1, max: 100 }).toInt(),
+];
+
+export const auditExportValidation = [
+  body('filters').isObject().withMessage('Filters object is required.'),
+  body('format').isIn(['csv', 'pdf', 'ndjson']).withMessage('Format must be csv, pdf, or ndjson.'),
+];
+
 // --- Admin Audit Controller ---
 
 /** Writes an immutable audit log entry. POST /audit */
@@ -406,6 +421,85 @@ export const logAuditController = async (req: Request, res: Response): Promise<v
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error saving immutable log.',
+      500
+    );
+  }
+};
+
+/** Queries the audit log ledger. GET /admin/audit-logs */
+export const queryAuditLogsController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    // Service handles query
+    const list = await auditService.queryAuditLogs(req.query);
+
+    return ResponseBuilder.success(res, list, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error querying audit logs.',
+      500
+    );
+  }
+};
+
+/** Initiates an audit log export job. POST /admin/audit-logs/export */
+export const exportAuditLogsController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    if (!req.user || !req.user.sub) {
+      return ResponseBuilder.error(
+        res,
+        ErrorCode.UNAUTHORIZED,
+        'Authentication required.',
+        401
+      );
+    }
+
+    const requesterId = req.user.sub;
+    const { filters, format } = req.body;
+
+    // Service queues the export job
+    const { jobId } = await auditService.exportAuditLogs(filters, format, requesterId);
+
+    // 202 Accepted: job queued
+    return ResponseBuilder.success(
+      res,
+      {
+        jobId,
+        status: 'queued',
+        message: 'Audit log export job successfully queued. You will be notified upon completion.',
+      },
+      202
+    );
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error queuing export job.',
       500
     );
   }
