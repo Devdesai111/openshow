@@ -393,6 +393,20 @@ export const updateRoleValidation = [
   body('newRole').isIn(['creator', 'owner', 'admin']).withMessage('Invalid role provided.'),
 ];
 
+export const disputeQueueValidation = [
+  query('status').optional().isIn(['open', 'under_review', 'resolved', 'escalated', 'closed']).withMessage('Invalid dispute status filter.'),
+  query('page').optional().isInt({ min: 1 }).toInt(),
+  query('per_page').optional().isInt({ min: 1, max: 100 }).toInt(),
+];
+
+export const resolveDisputeValidation = [
+  param('disputeId').isString().withMessage('Dispute ID is required.'),
+  body('resolution').isIn(['release', 'refund', 'split', 'deny']).withMessage('Invalid resolution outcome.'),
+  body('notes').isString().isLength({ min: 10 }).withMessage('Notes are required for resolution (min 10 chars).'),
+  body('releaseAmount').optional().isInt({ min: 0 }).toInt().withMessage('Release amount must be non-negative integer.'),
+  body('refundAmount').optional().isInt({ min: 0 }).toInt().withMessage('Refund amount must be non-negative integer.'),
+];
+
 // --- Admin Audit Controller ---
 
 /** Writes an immutable audit log entry. POST /audit */
@@ -775,6 +789,112 @@ export const updateAdminUserRoleController = async (req: Request, res: Response)
       res,
       ErrorCode.INTERNAL_SERVER_ERROR,
       'Internal server error updating user role.',
+      500
+    );
+  }
+};
+
+/** Retrieves the dispute queue. GET /admin/disputes/queue */
+export const getDisputeQueueController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : (err as any).param || undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    const queue = await adminService.getDisputeQueue(req.query);
+    return ResponseBuilder.success(res, queue, 200);
+  } catch (error: unknown) {
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error retrieving dispute queue.',
+      500
+    );
+  }
+};
+
+/** Manually resolves a dispute. POST /admin/disputes/:disputeId/resolve */
+export const resolveDisputeController = async (req: Request, res: Response): Promise<void> => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return ResponseBuilder.validationError(
+      res,
+      errors.array().map(err => ({
+        field: err.type === 'field' ? (err as any).path : undefined,
+        reason: err.msg,
+        value: err.type === 'field' ? (err as any).value : undefined,
+      }))
+    );
+  }
+
+  try {
+    if (!req.user || !req.user.sub) {
+      return ResponseBuilder.error(res, ErrorCode.UNAUTHORIZED, 'Authentication required.', 401);
+    }
+
+    const { disputeId } = req.params;
+    const adminId = req.user.sub;
+    const { resolution, releaseAmount, refundAmount, notes } = req.body as {
+      resolution?: string;
+      releaseAmount?: number;
+      refundAmount?: number;
+      notes?: string;
+    };
+
+    if (!resolution || !notes || typeof resolution !== 'string' || typeof notes !== 'string') {
+      return ResponseBuilder.error(res, ErrorCode.VALIDATION_ERROR, 'Resolution and notes are required.', 422);
+    }
+
+    const resolutionData = {
+      resolution: resolution as 'release' | 'refund' | 'split' | 'deny',
+      releaseAmount: releaseAmount ? parseInt(releaseAmount.toString()) : undefined,
+      refundAmount: refundAmount ? parseInt(refundAmount.toString()) : undefined,
+      notes,
+    };
+
+    const updatedDispute = await adminService.resolveDispute(disputeId, adminId, resolutionData);
+
+    return ResponseBuilder.success(
+      res,
+      {
+        disputeId: updatedDispute.disputeId,
+        status: updatedDispute.status,
+        resolution: updatedDispute.resolution
+          ? {
+              outcome: updatedDispute.resolution.outcome,
+              resolvedAmount: updatedDispute.resolution.resolvedAmount,
+              refundAmount: updatedDispute.resolution.refundAmount,
+              notes: updatedDispute.resolution.notes,
+              resolvedAt: updatedDispute.resolution.resolvedAt.toISOString(),
+            }
+          : undefined,
+        message: 'Dispute successfully resolved and financial actions initiated.',
+      },
+      200
+    );
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage === 'DisputeNotFoundOrResolved') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Dispute not found or already resolved.', 404);
+    }
+    if (errorMessage === 'EscrowNotFound') {
+      return ResponseBuilder.error(res, ErrorCode.NOT_FOUND, 'Escrow associated with dispute not found.', 404);
+    }
+
+    // Future: Catch specific financial errors (e.g., Funds not available)
+    return ResponseBuilder.error(
+      res,
+      ErrorCode.INTERNAL_SERVER_ERROR,
+      'Internal server error resolving dispute.',
       500
     );
   }

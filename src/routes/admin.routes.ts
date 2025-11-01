@@ -26,6 +26,10 @@ import {
   updateAdminUserRoleController,
   adminUserListValidation,
   updateRoleValidation,
+  getDisputeQueueController,
+  resolveDisputeController,
+  disputeQueueValidation,
+  resolveDisputeValidation,
 } from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/rbac.middleware';
@@ -165,6 +169,26 @@ router.put(
   authorize(userManageAccess), // RBAC check: Admin access
   updateRoleValidation,
   updateAdminUserRoleController
+);
+
+// --- Admin Dispute Management Endpoints (Task 65) ---
+
+// GET /admin/disputes/queue - Get list of open/pending disputes
+router.get(
+  '/disputes/queue',
+  authenticate,
+  authorize(userManageAccess), // RBAC check: Admin access
+  disputeQueueValidation,
+  getDisputeQueueController
+);
+
+// POST /admin/disputes/:disputeId/resolve - Manually resolve a dispute
+router.post(
+  '/disputes/:disputeId/resolve',
+  authenticate,
+  authorize(userManageAccess), // RBAC check: Admin access
+  resolveDisputeValidation,
+  resolveDisputeController
 );
 
 // ... Future Admin endpoints (reconciliation, manual ops) go here ...
